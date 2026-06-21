@@ -7,37 +7,18 @@
 
 
 class Motor {
-public:
-    //Mode Enumeration
-    enum class Mode {
-        vt,
-        vp,
-        pt
-    };
-
 private:
     //Internal field for motor to store data
     int directionPin;
     int pwmPin;
     int enablePin;
-    Mode mode = Mode::vt;
     float target = 0;
 
-    float getTarget(int param1, int param2, int direction) {
-        switch (mode) {
-            case Mode::vt: {
-                if (direction == 0) {
-                    return target - (static_cast<float>(param1) * static_cast<float>(param2));
-                }
-                return target + (static_cast<float>(param1) * static_cast<float>(param2));
-            }
-            case Mode::vp:
-                return static_cast<float>(param2);
-            break;
-            case Mode::pt:
-                return static_cast<float>(param1);
-            break;
+    float getTarget(int param1, int param2, int direction) const {
+        if (direction == 0) {
+            return target - (static_cast<float>(param1) * static_cast<float>(param2));
         }
+        return target + (static_cast<float>(param1) * static_cast<float>(param2));
     }
 
     float countEncoder() {
@@ -60,10 +41,6 @@ public:
 
     void disable() const {
         digitalWrite(this->enablePin, LOW);
-    }
-
-    void setMode(Mode mode) {
-        this->mode = mode;
     }
 
 
@@ -115,15 +92,6 @@ void loop() {
         } else if (opCode == 10) {
             //Turn enable on
             motor.enable();
-        } else if (opCode == 20) {
-            //Set velocity+time mode (default)
-            motor.setMode(Motor::Mode::vt);
-        } else if (opCode == 30) {
-            //Set velocity+position mode
-            motor.setMode(Motor::Mode::vp);
-        } else if (opCode == 40) {
-            //Set postion+time mode
-            motor.setMode(Motor::Mode::pt);
         } else if (opCode == 1) {
             u_int8_t buffer[3];
             while (Serial1COM.available() < 4) {
@@ -135,7 +103,6 @@ void loop() {
             uint8_t direction = buffer[2];
             // motor.update(speed, time, direction)
         }
-    } else {
-        // motor.update()
     }
+    // motor.update()
 }
