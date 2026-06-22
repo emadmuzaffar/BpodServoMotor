@@ -4,25 +4,66 @@
 
 #include <Arduino.h>
 #include <ArCom/ArCOM.h>
+#include <ArCom/ArCOM.cpp>
 
 
 class Motor {
-private:
-    //Internal field for motor to store data
+    //Constants
+    float MaxMotorRPM = 30; //RPM used for conversion math, should be set in the clearPath application
+    float MaxPWM = 65535;
+
+    //Internal variables for motor to store data
     int directionPin;
     int pwmPin;
     int enablePin;
     float target = 0;
+    unsigned long startTime = 0;
+    uint8_t time = 0;
 
-    float getTarget(int param1, int param2, int direction) const {
+    /*
+    float getTarget(const int velocity, const int time, const int direction) const {
         if (direction == 0) {
-            return target - (static_cast<float>(param1) * static_cast<float>(param2));
+            return target - (static_cast<float>(velocity) * static_cast<float>(time));
         }
-        return target + (static_cast<float>(param1) * static_cast<float>(param2));
+        return target + (static_cast<float>(velocity) * static_cast<float>(time));
+    }
+    */
+
+    void setTimer(const uint8_t timerLength) {
+        startTime = millis();
+        this->time = timerLength;
     }
 
-    float countEncoder() {
-        
+    boolean updateTimer() const {
+        if (millis() > startTime + time) return true;
+        return false;
+    }
+
+    void setPWM(const int velocity) {
+        startTime = millis();
+        u_int16_t tRPM = static_cast<u_int16_t>(velocity) / 6; //simplified conversion from deg/s to rpm
+        if (tRPM > static_cast<u_int16_t>(MaxMotorRPM)) {
+            tRPM = static_cast<u_int16_t>(MaxMotorRPM);
+        }
+        if (tRPM < 0) {
+            tRPM = 0;
+        }
+        analogWrite(this->pwmPin, 65535 * (tRPM/static_cast<u_int16_t>(MaxMotorRPM)));
+    }
+
+    void setDirection(int direction) const {
+        if (direction == 0) {
+            digitalWrite(directionPin, HIGH);
+        } else if (direction == 1) {
+            digitalWrite(directionPin, LOW);
+        }
+    }
+
+    void pwmStop(boolean stop = false) const {
+        if (stop) {
+            analogWrite(this->pwmPin, 0);
+            return;
+        } else return;
     }
 
 public:
@@ -43,6 +84,16 @@ public:
         digitalWrite(this->enablePin, LOW);
     }
 
+    void update() {
+        pwmStop(updateTimer());
+        //add safety update here
+    }
+
+    void update(uint8_t speed, uint8_t time, uint8_t direction) {
+        setDirection(direction);
+        setPWM(speed);
+        setTimer(time);
+    }
 
 };
 
@@ -94,15 +145,15 @@ void loop() {
             motor.enable();
         } else if (opCode == 1) {
             u_int8_t buffer[3];
-            while (Serial1COM.available() < 4) {
+            while (Serial1COM.available() < 3) {
                 // wait for full array
             }
             Serial1COM.readByteArray(buffer, 3);
             uint8_t speed  = buffer[0];
             uint8_t time = buffer[1];
             uint8_t direction = buffer[2];
-            // motor.update(speed, time, direction)
+            motor.update(speed, time, direction);
         }
     }
-    // motor.update()
+    motor.update();
 }
