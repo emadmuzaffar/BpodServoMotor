@@ -3,7 +3,6 @@
 //
 
 #include <Arduino.h>
-#include <chrono>
 #include <ArCom/ArCOM.h>
 
 constexpr uint8_t kDirectionPin = 2;
@@ -149,7 +148,7 @@ void setup() {
     Serial1.begin(1312500); //specific baud rate for Bpod
     analogWriteResolution(16);
 
-    //debug
+    //TODO: debug
     pinMode(kStatusLedPin, OUTPUT);
     digitalWrite(kStatusLedPin, LOW);
     SerialUSB.begin(115200);
@@ -159,7 +158,15 @@ void setup() {
  * Main loop
  * @author Emad Muzaffar
 */
+//TODO: debug
+double cMicros = 0;
+
 void loop() {
+
+    //TODO: debug
+    SerialUSB.println(cMicros - micros());
+    cMicros = micros();
+
 
     if (readingMotorCommand) {
         readMotorCommandByte();
