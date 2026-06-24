@@ -1,3 +1,4 @@
+/*
 #include <Arduino.h>
 #include "ArCom/ArCOM.h"
 
@@ -55,3 +56,4 @@ void returnModuleInfo() {
     Serial1COM.writeCharArray(moduleName, sizeof(moduleName) - 1);
     Serial1COM.writeByte(0);                          // no extra info
 }
+*/
