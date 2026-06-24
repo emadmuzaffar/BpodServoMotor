@@ -3,6 +3,7 @@
 //
 
 #include <Arduino.h>
+#include <chrono>
 #include <ArCom/ArCOM.h>
 
 constexpr uint8_t kDirectionPin = 2;
@@ -11,6 +12,11 @@ constexpr uint8_t kEnablePin = 3;
 constexpr uint8_t kStatusLedPin = 13;
 constexpr float kMaxMotorRPM = 30.0f; // Must match the ClearPath MSP setup.
 constexpr uint16_t kMaxPwm = 65535;
+constexpr byte kModuleInfoOpCode = 255;
+constexpr byte kMotorCommandOpCode = 1;
+constexpr byte kDisableMotorOpCode = 9;
+constexpr byte kEnableMotorOpCode = 10;
+constexpr uint8_t kMotorCommandLength = 3;
 
 class Motor {
     //Internal variables for motor to store data.
@@ -96,6 +102,9 @@ char moduleName[] = "ServoMotor"; // ModuleName sent to Bpod in returnModuleInfo
 ArCOM Serial1COM(Serial1); // NOLINT(*-interfaces-global-init)
 Motor motor(kDirectionPin, kPwmPin, kEnablePin);
 byte opCode = 0; //Code to specify instruction type
+uint8_t motorCommandBuffer[kMotorCommandLength] = {};
+uint8_t motorCommandBytesRead = 0;
+bool readingMotorCommand = false;
 
 /**
  * From SanWorks example
@@ -109,6 +118,30 @@ void returnModuleInfo() {
     Serial1COM.writeByte(sizeof(moduleName)-1); // Length of module name
     Serial1COM.writeCharArray(moduleName, sizeof(moduleName)-1); // Module name
     Serial1COM.writeByte(0); // 1 if more info follows, 0 if not
+}
+
+void runMotorCommand() {
+    uint8_t speed  = motorCommandBuffer[0];
+    uint8_t time = motorCommandBuffer[1];
+    uint8_t direction = motorCommandBuffer[2];
+    motor.update(speed, time, direction);
+
+    SerialUSB.println(speed); SerialUSB.println(time); SerialUSB.println(direction);
+}
+
+void readMotorCommandByte() {
+    if (!Serial1COM.available()) {
+        return;
+    }
+
+    motorCommandBuffer[motorCommandBytesRead] = Serial1COM.readByte();
+    motorCommandBytesRead++;
+
+    if (motorCommandBytesRead == kMotorCommandLength) {
+        runMotorCommand();
+        motorCommandBytesRead = 0;
+        readingMotorCommand = false;
+    }
 }
 
 
@@ -127,31 +160,25 @@ void setup() {
  * @author Emad Muzaffar
 */
 void loop() {
-    if (Serial1COM.available()) {
+
+    if (readingMotorCommand) {
+        readMotorCommandByte();
+    } else if (Serial1COM.available()) {
         opCode = Serial1COM.readByte();
-        if (opCode == 255) {
+        if (opCode == kModuleInfoOpCode) {
             returnModuleInfo();
-        } else if (opCode == 9) {
+        } else if (opCode == kDisableMotorOpCode) {
             //Turn enable off
             digitalWrite(kStatusLedPin, LOW);
             motor.disable();
-        } else if (opCode == 10) {
+        } else if (opCode == kEnableMotorOpCode) {
             //Turn enable on
             digitalWrite(kStatusLedPin, HIGH);
             motor.enable();
-        } else if (opCode == 1) {
-            uint8_t buffer[3];
-            //TODO: remove the wait
-            while (Serial1COM.available() < 3) {
-                // wait for full array
-            }
-            Serial1COM.readByteArray(buffer, 3);
-            uint8_t speed  = buffer[0];
-            uint8_t time = buffer[1];
-            uint8_t direction = buffer[2];
-            motor.update(speed, time, direction);
-
-            SerialUSB.println(speed); SerialUSB.println(time); SerialUSB.println(direction);
+        } else if (opCode == kMotorCommandOpCode) {
+            readingMotorCommand = true;
+            motorCommandBytesRead = 0;
+            readMotorCommandByte();
         }
     }
     motor.update();
