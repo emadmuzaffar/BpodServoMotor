@@ -24,7 +24,8 @@ constexpr uint16_t kMaxPwm = 65535;
 constexpr byte kModuleScanOpCode = 255;
 constexpr byte kDisableMotorOpCode = 249;
 constexpr byte kEnableMotorOpCode = 250;
-constexpr byte kMotorHomeOpCode = 251;
+constexpr byte kMotorHomeOpCode = 200;
+constexpr byte kEncoderResetOpCode = 254;
 constexpr uint8_t kMotorInstructionLength = 3;
 constexpr uint32_t maxInstructionReadTime = 500;
 constexpr int timeMultiplier = 100;
@@ -511,7 +512,10 @@ void loop() {
             motor.enable();
         } else if (opCode == kMotorHomeOpCode) {
             startReadingMacroInstructions(opCode);
-        } else {
+        } else if (opCode == kEncoderResetOpCode) {
+            motor.setTickOffset();
+        }
+        else {
             //reads motor instructions
             startReadingMotorInstructions(opCode);
             readMotorInstructionByte();
