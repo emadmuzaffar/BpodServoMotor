@@ -30,21 +30,21 @@ protected:
 
 public:
   // Constructor
-  ArCOM(Stream &s);
+  explicit ArCOM(Stream &s);
   // Serial functions
-  unsigned int available();
-  void flush();
+  unsigned int available() const;
+  void flush() const;
   // Unsigned integers
-	void writeByte(byte byte2Write);
-  void writeUint8(byte byte2Write);
-  void writeChar(char char2Write);
-  void writeByteArray(byte numArray[], unsigned int size);
-  void writeUint8Array(byte numArray[], unsigned int size);
-  void writeCharArray(char charArray[], unsigned int size);
-  void writeUint16(uint16_t int2Write);
-  void writeUint16Array(unsigned short numArray[], unsigned int size);
-  void writeUint32(uint32_t int2Write);
-  void writeUint32Array(unsigned long numArray[], unsigned int size);
+	void writeByte(byte byte2Write) const;
+  void writeUint8(byte byte2Write) const;
+  void writeChar(char char2Write) const;
+  void writeByteArray(const byte numArray[], unsigned int size) const;
+  void writeUint8Array(const byte numArray[], unsigned int size) const;
+  void writeCharArray(const char charArray[], unsigned int size) const;
+  void writeUint16(uint16_t int2Write) const;
+  void writeUint16Array(const unsigned short numArray[], unsigned int size);
+  void writeUint32(uint32_t int2Write) const;
+  void writeUint32Array(const unsigned long numArray[], unsigned int size);
   byte readByte();
   byte readUint8();
   char readChar();
@@ -58,11 +58,11 @@ public:
   
   // Signed integers
   void writeInt8(int8_t int2Write);
-  void writeInt8Array(int8_t numArray[], unsigned int size);
+  void writeInt8Array(const int8_t numArray[], unsigned int size);
   void writeInt16(int16_t int2Write);
-  void writeInt16Array(int16_t numArray[], unsigned int size);
+  void writeInt16Array(const int16_t numArray[], unsigned int size);
   void writeInt32(int32_t int2Write);
-  void writeInt32Array(int32_t numArray[], unsigned int size);
+  void writeInt32Array(const int32_t numArray[], unsigned int size);
   int8_t readInt8();
   void readInt8Array(int8_t numArray[], unsigned int size);
   int16_t readInt16();
