@@ -19,7 +19,10 @@
 constexpr uint8_t kDirectionPin = 23;
 constexpr uint8_t kPwmPin = 6;
 constexpr uint8_t kEnablePin = 24;
-constexpr uint8_t kStatusLedPin = 13;
+constexpr uint8_t kHostTransmitPin = 52;
+constexpr uint8_t kHostReceivePin = 50;
+constexpr uint8_t kClientTransmitPin = 48;
+constexpr uint8_t kClientReceivePin = 46;
 float kMaxMotorRPM = 30.0f; // Must match the ClearPath MSP setup. //TODO: MAKE CONFIGURABLE
 constexpr uint16_t kMaxPwm = 65535;
 constexpr byte kModuleScanOpCode = 255;
@@ -28,17 +31,24 @@ constexpr byte kEnableMotorOpCode = 250;
 constexpr byte kMotorHomeOpCode = 200;
 constexpr byte kEncoderResetOpCode = 253;
 constexpr byte kConfigOpCode = 254;
-constexpr uint8_t kMotorInstructionLength = 3;
-constexpr uint8_t kConfigLength = 6;
+constexpr uint8_t kBytesPerUint16 = 2;
+constexpr uint8_t kMotorInstructionFieldCount = 3;
+constexpr uint8_t kMotorInstructionLength = kMotorInstructionFieldCount * kBytesPerUint16;
+constexpr uint8_t kMotorHomeInstructionLength = kBytesPerUint16;
+constexpr uint8_t kConfigFieldCount = 6;
+constexpr uint8_t kConfigLength = kConfigFieldCount * kBytesPerUint16;
+constexpr int kHostStartTolerance = 300;
+constexpr int kCrossCheckMaxNoResponseTime = 5000;
+constexpr int kCrossCheckDutyTime = 500;
 int timeMultiplier = 100; //TODO: MAKE CONFIGURABLE
 
 
 struct Instruction {
-    uint8_t speed;
-    uint8_t time;
-    uint8_t direction;
+    uint16_t speed;
+    uint16_t time;
+    uint16_t direction;
     Instruction() : speed(0), time(0), direction(0) {}
-    Instruction(const uint8_t speed, const uint8_t time, const uint8_t direction)
+    Instruction(const uint16_t speed, const uint16_t time, const uint16_t direction)
         : speed(speed), time(time), direction(direction) {}
 };
 
@@ -152,7 +162,7 @@ public:
     }
 
     void reportInstruction(Instruction instruction) {
-        startTime = millis();
+        startTime = micros();
         cInstruction = instruction;
         tPosition += calculateInstructionDistance(instruction);
     }
@@ -173,6 +183,11 @@ public:
     void disable() const {
         digitalWrite(this->enablePin, LOW);
     }
+
+    void eStop() {
+         eStopped = true;
+         disable();
+     }
 
 
     void update() {
@@ -213,7 +228,7 @@ class Motor {
     float kP = 0.1; //TODO: MAKE CONFIGURABLE
     float kD = 0.1; //TODO: MAKE CONFIGURABLE
 
-    void setTimer(const uint8_t timerLength) {
+    void setTimer(const uint16_t timerLength) {
         startTime = millis();
         durationMs = timerLength * timeMultiplier;
     }
@@ -227,12 +242,12 @@ class Motor {
         return false;
     }
 
-    static float getVelocity(const uint8_t velocityDegPerSec) {
+    static float getVelocity(const uint16_t velocityDegPerSec) {
         float targetRPM = static_cast<float>(velocityDegPerSec) / 6.0f;
         return constrain(targetRPM, 0.0f, kMaxMotorRPM);
     }
 
-    void setPWM(const uint8_t velocityDegPerSec) const {
+    void setPWM(const uint16_t velocityDegPerSec) const {
         float targetRPM = getVelocity(velocityDegPerSec);
         const auto duty = static_cast<uint16_t>((targetRPM / kMaxMotorRPM) * kMaxPwm);
         analogWrite(this->pwmPin, duty);
@@ -355,13 +370,13 @@ public:
         }
     }
 
-    void home(const u_int8_t speed) {
+    void home(const uint16_t speed) {
         int32_t cPos = safetynet.getTicks();
         double cPosDegrees = static_cast<double>(cPos) / 40;
         double time = cPosDegrees / speed;
         Instruction instruction[1];
         instruction[0].speed = speed;
-        instruction[0].time = static_cast<uint8_t>(time);
+        instruction[0].time = static_cast<uint16_t>(time);
         if (cPos > 0) {
             instruction[0].direction = 1;
         } else if (cPos < 0) {
@@ -404,6 +419,7 @@ enum ReadState {
 };
 ReadState readState = OFF;
 int macroInstructionLength = 0;
+uint32_t hostTransmitTime = 0;
 
 /**
  * From SanWorks example
@@ -452,6 +468,7 @@ void startReadingMacroInstructions(const uint8_t macroCode) {
     if (macroCode == kMotorHomeOpCode) {
         readState = MACRO;
         motorInstructionBytesRead = 0;
+        macroInstructionLength = kMotorHomeInstructionLength;
         motorInstructionsExpected = 1;
         receivedInstructions.clear();
         receivedInstructions.reserve(1);
@@ -462,6 +479,12 @@ void startReadingConfig() {
     readState = CONFIG;
     configBytesRead = 0;
     receivedConfig = Config();
+}
+
+uint16_t uint16ValueAt(const uint8_t byteBuffer[], const uint8_t valueIndex) {
+    const uint8_t byteIndex = valueIndex * kBytesPerUint16;
+    return static_cast<uint16_t>(byteBuffer[byteIndex]) |
+        (static_cast<uint16_t>(byteBuffer[byteIndex + 1]) << 8);
 }
 
 void finishMotorInstructions() {
@@ -498,21 +521,27 @@ void readConfigByte() {
     configBytesRead++;
 
     if (configBytesRead == kConfigLength) {
-        receivedConfig = Config(configByteBuffer[0],
-            configByteBuffer[1],
-            configByteBuffer[2],
-            configByteBuffer[3],
-            configByteBuffer[4],
-            configByteBuffer[5]);
+        uint16_t maxMotorRPM = uint16ValueAt(configByteBuffer, 0);
+        uint16_t configuredTimeMultiplier = uint16ValueAt(configByteBuffer, 1);
+        uint16_t tolerance = uint16ValueAt(configByteBuffer, 2);
+        uint16_t encoderPPR = uint16ValueAt(configByteBuffer, 3);
+        uint16_t kP = uint16ValueAt(configByteBuffer, 4);
+        uint16_t kD = uint16ValueAt(configByteBuffer, 5);
+        receivedConfig = Config(maxMotorRPM,
+            configuredTimeMultiplier,
+            tolerance,
+            encoderPPR,
+            kP,
+            kD);
         configBytesRead = 0;
 
         //TODO: debug
-        SerialUSB.println(configByteBuffer[0]);
-        SerialUSB.println(configByteBuffer[1]);
-        SerialUSB.println(configByteBuffer[2]);
-        SerialUSB.println(configByteBuffer[3]);
-        SerialUSB.println(configByteBuffer[4]);
-        SerialUSB.println(configByteBuffer[5]);
+        SerialUSB.println(maxMotorRPM);
+        SerialUSB.println(configuredTimeMultiplier);
+        SerialUSB.println(tolerance);
+        SerialUSB.println(encoderPPR);
+        SerialUSB.println(kP);
+        SerialUSB.println(kD);
 
         finishConfig();
     }
@@ -528,9 +557,15 @@ void readMotorInstructionByte(uint8_t motorInstructionLength = kMotorInstruction
     motorInstructionBytesRead++;
 
     if (motorInstructionBytesRead == motorInstructionLength) {
-        uint8_t speed  = motorInstructionByteBuffer[0];
-        uint8_t time = motorInstructionByteBuffer[1];
-        uint8_t direction = motorInstructionByteBuffer[2];
+        uint16_t speed = uint16ValueAt(motorInstructionByteBuffer, 0);
+        uint16_t time = 0;
+        uint16_t direction = 0;
+        if (motorInstructionLength >= 2 * kBytesPerUint16) {
+            time = uint16ValueAt(motorInstructionByteBuffer, 1);
+        }
+        if (motorInstructionLength >= 3 * kBytesPerUint16) {
+            direction = uint16ValueAt(motorInstructionByteBuffer, 2);
+        }
         receivedInstructions.emplace_back(speed, time, direction);
         motorInstructionBytesRead = 0;
         Serial1COM.writeByte(2);
@@ -543,7 +578,38 @@ void readMotorInstructionByte(uint8_t motorInstructionLength = kMotorInstruction
     }
 }
 
+void hostTransmit() {
+    if (micros() - hostTransmitTime > kCrossCheckDutyTime) {
+        if (digitalRead(kHostTransmitPin) == HIGH) {
+            digitalWrite(kHostTransmitPin, LOW);
+            hostTransmitTime = micros();
+        } else {
+            digitalWrite(kHostTransmitPin, HIGH);
+            hostTransmitTime = micros();
+        }
+    }
+}
 
+void hostUpdate() {
+    if (millis() > kHostStartTolerance) {
+        if (digitalRead(kHostReceivePin) != digitalRead(kHostTransmitPin)) {
+            if (micros() - hostTransmitTime > kCrossCheckMaxNoResponseTime) {
+                motor.safetynet.eStop();
+            }
+        } else {
+            hostTransmit();
+        }
+    }
+}
+
+void clientUpdate() {
+    digitalWrite(kClientTransmitPin, digitalRead(kClientReceivePin));
+}
+
+void crossCheckUpdate() {
+    hostUpdate();
+    clientUpdate();
+}
 
 
 
@@ -555,7 +621,10 @@ void setup() {
     Serial1.begin(1312500); //specific baud rate for Bpod
     analogWriteResolution(16); //higher than default resolution for finer control,
     analogWrite(kPwmPin, 0); // ensure pwm is off
-
+    pinMode(kHostTransmitPin, OUTPUT);
+    pinMode(kHostReceivePin, INPUT);
+    pinMode(kClientTransmitPin, OUTPUT);
+    pinMode(kClientReceivePin, INPUT);
     //TODO: debug
     SerialUSB.begin(115200);
 }
@@ -565,13 +634,13 @@ void setup() {
  * @author Emad Muzaffar
 */
 //TODO: debug
-double cMicros = 0;
+uint32_t oldMicros = 0;
 
 void loop() {
 
     //TODO: debug
-    SerialUSB.println(cMicros - micros());
-    cMicros = micros();
+    SerialUSB.println(micros() - oldMicros);
+    oldMicros = micros();
 
 
     if (readState == ON) {
@@ -604,4 +673,5 @@ void loop() {
         }
     }
     if (motor.checkStatusAndUpdate()) Serial1COM.writeByte(1); //updates motor, writes behavior state byte to Bpod if completed
+    crossCheckUpdate();
 }
