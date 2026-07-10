@@ -5,10 +5,10 @@
 #include <Arduino.h>
 
 // Cross-check pin setup
-constexpr uint8_t kHostTransmitPin = 52;
-constexpr uint8_t kHostReceivePin = 50;
-constexpr uint8_t kClientTransmitPin = 48;
-constexpr uint8_t kClientReceivePin = 46;
+constexpr uint8_t kHostTransmitPin = 8;
+constexpr uint8_t kHostReceivePin = 7;
+constexpr uint8_t kClientTransmitPin = 6;
+constexpr uint8_t kClientReceivePin = 5;
 
 // Timing setup
 constexpr uint32_t kHostStartTolerance = 300;        // milliseconds before safety check starts
