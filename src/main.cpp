@@ -12,6 +12,7 @@
 #undef max
 #endif
 
+#include <algorithm>
 #include <vector>
 #include <ArCom/ArCOM.h>
 
@@ -19,16 +20,17 @@ constexpr uint8_t kDirectionPin = 23;
 constexpr uint8_t kPwmPin = 6;
 constexpr uint8_t kEnablePin = 24;
 constexpr uint8_t kStatusLedPin = 13;
-constexpr float kMaxMotorRPM = 30.0f; // Must match the ClearPath MSP setup.
+float kMaxMotorRPM = 30.0f; // Must match the ClearPath MSP setup. //TODO: MAKE CONFIGURABLE
 constexpr uint16_t kMaxPwm = 65535;
 constexpr byte kModuleScanOpCode = 255;
 constexpr byte kDisableMotorOpCode = 249;
 constexpr byte kEnableMotorOpCode = 250;
 constexpr byte kMotorHomeOpCode = 200;
-constexpr byte kEncoderResetOpCode = 254;
+constexpr byte kEncoderResetOpCode = 253;
+constexpr byte kConfigOpCode = 254;
 constexpr uint8_t kMotorInstructionLength = 3;
-constexpr uint32_t maxInstructionReadTime = 500;
-constexpr int timeMultiplier = 100;
+constexpr uint8_t kConfigLength = 6;
+int timeMultiplier = 100; //TODO: MAKE CONFIGURABLE
 
 
 struct Instruction {
@@ -36,21 +38,41 @@ struct Instruction {
     uint8_t time;
     uint8_t direction;
     Instruction() : speed(0), time(0), direction(0) {}
-    Instruction(uint8_t speed, uint8_t time, uint8_t direction)
+    Instruction(const uint8_t speed, const uint8_t time, const uint8_t direction)
         : speed(speed), time(time), direction(direction) {}
 };
 
+struct Config {
+    float maxMotorRPM;
+    int timeMultiplier;
+    int tolerance;
+    int encoderPPR;
+    float kP;
+    float kD;
+    Config() : maxMotorRPM(30.0f), timeMultiplier(1), tolerance(5000), encoderPPR(14400), kP(0.1), kD(0.1) {}
+    Config(const float maxMotorRPM, const int timeMultiplier, const int tolerance, const int encoderPPR, const float kP, const float kD)
+        : maxMotorRPM(maxMotorRPM), 
+    timeMultiplier(timeMultiplier), 
+    tolerance(tolerance), 
+    encoderPPR(encoderPPR), 
+    kP(kP), 
+    kD(kD) {}
+};
+
 class Safetynet {
-    const int32_t tolerance = 5000;
+    friend class Motor;
+
+    int32_t tolerance = 5000; //TODO: MAKE CONFIGURABLE
+    int32_t encoderPPR = 14400; //TODO: MAKE CONFIGURABLE and multiply by 4 on input
     uint8_t enablePin;
     unsigned long startTime = 0;
-    float tPosition = 0;
+    double tPosition = 0;
     Instruction cInstruction;
     int32_t tickOffset = 0;
     bool eStopped = false;
 
     static float calculateInstructionDistance(Instruction instruction) {
-        float distance = static_cast<float>(instruction.speed) * (static_cast<float>(instruction.time) * timeMultiplier);
+        float distance = static_cast<float>(instruction.speed) * (static_cast<float>(instruction.time) * static_cast<float>(timeMultiplier));
         if (instruction.direction == 1) {
             distance = -distance;
         }
@@ -66,8 +88,8 @@ class Safetynet {
     }
 
     bool checkTolerance() const {
-        float ctPosition = tPosition + -calculateInstructionDistance(cInstruction) + calculateInstructionDistance(cInstruction, micros() - startTime);
-        int32_t error = abs(getTicks() - static_cast<int32_t>(ctPosition));
+        const double ctPosition = tPosition + -calculateInstructionDistance(cInstruction) + calculateInstructionDistance(cInstruction, micros() - startTime);
+        const int32_t error = abs(getTicks() - static_cast<int32_t>(ctPosition));
         if (error >= tolerance) {
             return true;
         }
@@ -76,6 +98,11 @@ class Safetynet {
 
     bool checkPositionSafety() const {
         return abs(getTicks()) > 29000;
+    }
+
+    void applyConfig(const Config &config) {
+        tolerance = config.tolerance;
+        encoderPPR = config.encoderPPR;
     }
 
 public:
@@ -131,7 +158,7 @@ public:
     }
 
     double getTargetTicks() const {
-        return tPosition/360 * 14400;
+        return tPosition/360 * encoderPPR;
     }
 
     void enable() const {
@@ -160,13 +187,11 @@ public:
         }
 
     }
-
 };
 
 
 class Motor {
     enum motorState{
-        pHOME,
         pCORRECTING,
         CORRECTING,
         pINSTRUCTED,
@@ -174,8 +199,7 @@ class Motor {
     };
 
     //Internal variables for motor to store data.
-    motorState motorState = CORRECTING;
-    Safetynet safetynet;
+    motorState motorState = pCORRECTING;
     uint8_t directionPin;
     uint8_t pwmPin;
     unsigned long startTime = 0;
@@ -186,8 +210,8 @@ class Motor {
     double pidTarget = 0;
     double lastError = 0;
     double pidTime = 0;
-    const float kP = 0.1;
-    const float kD = 0.1;
+    float kP = 0.1; //TODO: MAKE CONFIGURABLE
+    float kD = 0.1; //TODO: MAKE CONFIGURABLE
 
     void setTimer(const uint8_t timerLength) {
         startTime = millis();
@@ -258,10 +282,12 @@ class Motor {
         setDirection(instruction.direction);
         setPWM(instruction.speed);
         setTimer(instruction.time);
+        motorState = pINSTRUCTED;
         safetynet.reportInstruction(instruction);
     }
 
 public:
+    Safetynet safetynet;
     explicit Motor(uint8_t directionPin, uint8_t pwmPin, uint8_t enablePin) : safetynet(enablePin) {
         Safetynet::setupEncoder();
         this->directionPin = directionPin;
@@ -271,51 +297,44 @@ public:
         pinMode(enablePin, OUTPUT);
     }
 
-    void enable() const {
-        safetynet.enable();
-    }
-
-    void disable() const {
-        safetynet.disable();
-    }
-
-    void setTickOffset() {
-        safetynet.setTickOffset();
-    }
-
     bool checkStatusAndUpdate() {
         safetynet.update();
         switch(motorState) {
+            case pCORRECTING:
+                correctionPID();
+                motorState = CORRECTING;
+                return false;
+
             case CORRECTING:
                 pid();
                 return false;
-                break;
 
-            case INSTRUCTED:
+            case pINSTRUCTED:
                 if (instructions.empty()) {
                     motorState = CORRECTING;
+                } else {
+                    motorState = INSTRUCTED;
                 }
+                return false;
 
+            case INSTRUCTED:
                 if (timerComplete()) {
                     cInstruction++;
                     if (cInstruction < instructions.size()) {
                         internalRunInstruction(instructions[cInstruction]);
                     } else {
                         instructions.clear();
-                        motorState = CORRECTING;
+                        motorState = pCORRECTING;
                         return true;
                     }
                 }
-                break;
+                return false;
 
             default:
                 // Safety fallback
                 motorState = CORRECTING;
-                break;
+                return false;
         }
-
-
-        return false;
     }
 
     void setInstructions(const Instruction nInstructions[], size_t instructionCount) {
@@ -342,13 +361,19 @@ public:
         double time = cPosDegrees / speed;
         Instruction instruction[1];
         instruction[0].speed = speed;
-        instruction[0].time = time;
+        instruction[0].time = static_cast<uint8_t>(time);
         if (cPos > 0) {
             instruction[0].direction = 1;
         } else if (cPos < 0) {
             instruction[0].direction = 0;
         }
         setInstructions(instruction, 1);
+    }
+
+    void applyConfig(const Config &config) {
+        kP = config.kP;
+        kD = config.kD;
+        safetynet.applyConfig(config);
     }
 
 };
@@ -363,15 +388,19 @@ char moduleName[] = "ServoMotor"; // ModuleName sent to Bpod in returnModuleInfo
 ArCOM Serial1COM(Serial1); // NOLINT(*-interfaces-global-init)
 Motor motor(kDirectionPin, kPwmPin, kEnablePin);
 byte opCode = 0; // Control opcode, or number of motor instructions to read.
-uint8_t motorInstructionBuffer[kMotorInstructionLength] = {};
+uint8_t motorInstructionByteBuffer[kMotorInstructionLength] = {};
 uint8_t motorInstructionBytesRead = 0;
 uint8_t motorInstructionsExpected = 0;
 std::vector<Instruction> receivedInstructions;
+uint8_t configByteBuffer[kConfigLength] = {};
+uint8_t configBytesRead = 0;
+Config receivedConfig;
 uint32_t readingStartTime = 0;
 enum ReadState {
     OFF,
     ON,
-    MACRO
+    MACRO,
+    CONFIG
 };
 ReadState readState = OFF;
 int macroInstructionLength = 0;
@@ -399,11 +428,17 @@ void returnModuleInfo() {
     Serial1COM.writeByte(0);
 }
 
+void applyConfig(const Config &config) {
+    kMaxMotorRPM = config.maxMotorRPM;
+    timeMultiplier = config.timeMultiplier;
+    motor.applyConfig(config);
+}
+
 void startReadingMotorInstructions(const uint8_t instructionCount) {
     motorInstructionBytesRead = 0;
     motorInstructionsExpected = instructionCount;
     receivedInstructions.clear();
-    receivedInstructions.reserve(instructionCount);
+    receivedInstructions.reserve(motorInstructionsExpected);
 
     if (motorInstructionsExpected == 0) {
         motor.setInstructions(receivedInstructions.data(), receivedInstructions.size());
@@ -423,6 +458,12 @@ void startReadingMacroInstructions(const uint8_t macroCode) {
     }
 }
 
+void startReadingConfig() {
+    readState = CONFIG;
+    configBytesRead = 0;
+    receivedConfig = Config();
+}
+
 void finishMotorInstructions() {
     if (readState == ON) {
         motor.setInstructions(receivedInstructions.data(), receivedInstructions.size());
@@ -430,32 +471,66 @@ void finishMotorInstructions() {
     else if (readState == MACRO) {
         motor.home(receivedInstructions.data()->speed);
     }
+    //reset system
+    std::fill_n(motorInstructionByteBuffer, kMotorInstructionLength, 0);
     motorInstructionBytesRead = 0;
     motorInstructionsExpected = 0;
-    std::fill_n(motorInstructionBuffer, 2, 0);
     macroInstructionLength = 0;
     Serial1COM.writeByte(2);
     readState = OFF;
 }
 
-void cancelMotorInstructions() {
-    motorInstructionBytesRead = 0;
-    motorInstructionsExpected = 0;
-    std::fill_n(motorInstructionBuffer, 2, 0);
+void finishConfig() {
+    applyConfig(receivedConfig);
+    //reset system
+    receivedConfig = Config();
+    std::fill_n(configByteBuffer, kConfigLength, 0);
+    configBytesRead = 0;
+    Serial1COM.writeByte(2);
     readState = OFF;
 }
+
+void readConfigByte() {
+    if (!Serial1COM.available()) {
+        return;
+    }
+    configByteBuffer[configBytesRead] = Serial1COM.readByte();
+    configBytesRead++;
+
+    if (configBytesRead == kConfigLength) {
+        receivedConfig = Config(configByteBuffer[0],
+            configByteBuffer[1],
+            configByteBuffer[2],
+            configByteBuffer[3],
+            configByteBuffer[4],
+            configByteBuffer[5]);
+        configBytesRead = 0;
+
+        //TODO: debug
+        SerialUSB.println(configByteBuffer[0]);
+        SerialUSB.println(configByteBuffer[1]);
+        SerialUSB.println(configByteBuffer[2]);
+        SerialUSB.println(configByteBuffer[3]);
+        SerialUSB.println(configByteBuffer[4]);
+        SerialUSB.println(configByteBuffer[5]);
+
+        finishConfig();
+    }
+}
+
+
 
 void readMotorInstructionByte(uint8_t motorInstructionLength = kMotorInstructionLength) {
     if (!Serial1COM.available()) {
         return;
     }
-    motorInstructionBuffer[motorInstructionBytesRead] = Serial1COM.readByte();
+    motorInstructionByteBuffer[motorInstructionBytesRead] = Serial1COM.readByte();
     motorInstructionBytesRead++;
 
     if (motorInstructionBytesRead == motorInstructionLength) {
-        uint8_t speed  = motorInstructionBuffer[0];
-        uint8_t time = motorInstructionBuffer[1];
-        uint8_t direction = motorInstructionBuffer[2];
+        uint8_t speed  = motorInstructionByteBuffer[0];
+        uint8_t time = motorInstructionByteBuffer[1];
+        uint8_t direction = motorInstructionByteBuffer[2];
         receivedInstructions.emplace_back(speed, time, direction);
         motorInstructionBytesRead = 0;
         Serial1COM.writeByte(2);
@@ -467,6 +542,10 @@ void readMotorInstructionByte(uint8_t motorInstructionLength = kMotorInstruction
         }
     }
 }
+
+
+
+
 
 /**
  * Setup
@@ -499,24 +578,27 @@ void loop() {
         readMotorInstructionByte();
     } else if (readState == MACRO) {
         readMotorInstructionByte(macroInstructionLength);
+    } else if (readState == CONFIG) {
+        readConfigByte();
     } else if (Serial1COM.available()) {
         opCode = Serial1COM.readByte();
         if (opCode == kModuleScanOpCode) {
             returnModuleInfo();
-            motor.setTickOffset();
+            motor.safetynet.setTickOffset();
         } else if (opCode == kDisableMotorOpCode) {
             //Turn enable off
-            motor.disable();
+            motor.safetynet.disable();
         } else if (opCode == kEnableMotorOpCode) {
             //Turn enable on
-            motor.enable();
+            motor.safetynet.enable();
         } else if (opCode == kMotorHomeOpCode) {
             startReadingMacroInstructions(opCode);
         } else if (opCode == kEncoderResetOpCode) {
-            motor.setTickOffset();
-        }
-        else {
-            //reads motor instructions
+            motor.safetynet.setTickOffset();
+        } else if (opCode == kConfigOpCode) {
+            startReadingConfig();
+        } else {
+            //Reads motor instructions
             startReadingMotorInstructions(opCode);
             readMotorInstructionByte();
         }
