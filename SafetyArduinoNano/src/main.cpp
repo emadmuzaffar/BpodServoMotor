@@ -5,6 +5,7 @@
 #include <Arduino.h>
 
 // Cross-check pin setup
+constexpr uint8_t kEnablePin = 9;
 constexpr uint8_t kHostTransmitPin = 8;
 constexpr uint8_t kHostReceivePin = 7;
 constexpr uint8_t kClientTransmitPin = 6;
@@ -20,9 +21,13 @@ uint32_t hostTransmitTime = 0;
 uint32_t lastHostEchoTime = 0;
 uint8_t lastHostEchoState = LOW;
 
+//eStop bool
+bool eStopBool = false;
+
 // Replace this with your real e-stop function
 void eStop() {
-
+    digitalWrite(kEnablePin, LOW);
+    Serial.println("eStop");
 }
 
 void hostTransmit() {
@@ -89,6 +94,9 @@ void crossCheckUpdate() {
 void setup() {
     Serial.begin(115200);
 
+    pinMode (kEnablePin, OUTPUT);
+    digitalWrite(kEnablePin, HIGH);
+
     pinMode(kHostTransmitPin, OUTPUT);
     pinMode(kHostReceivePin, INPUT);
 
@@ -103,5 +111,8 @@ void setup() {
 }
 
 void loop() {
+    if (eStopBool) {
+        return;
+    }
     crossCheckUpdate();
 }
