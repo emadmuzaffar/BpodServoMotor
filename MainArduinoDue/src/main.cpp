@@ -23,7 +23,8 @@ constexpr uint8_t kHostTransmitPin = 52;
 constexpr uint8_t kHostReceivePin = 50;
 constexpr uint8_t kClientTransmitPin = 48;
 constexpr uint8_t kClientReceivePin = 46;
-float kMaxMotorRPM = 30.0f; // Must match the ClearPath MSP setup. //TODO: MAKE CONFIGURABLE
+constexpr float kMaxMotorRPM = 1000.0;
+float MaxMotorRPM = kMaxMotorRPM; // Must match the ClearPath MSP setup.
 constexpr uint16_t kMaxPwm = 65535;
 constexpr byte kModuleScanOpCode = 255;
 constexpr byte kDisableMotorOpCode = 249;
@@ -40,9 +41,21 @@ constexpr uint8_t kConfigLength = kConfigFieldCount * kBytesPerUint16;
 constexpr uint32_t kHostStartTolerance = 300;
 constexpr uint32_t kCrossCheckMaxNoResponseTime = 5000;
 constexpr uint32_t kCrossCheckDutyTime = 500;
-int timeMultiplier = 100; //TODO: MAKE CONFIGURABLE
+constexpr double kDegreesPerRotation = 360.0;
+constexpr double kMillisPerSecond = 1000.0;
+constexpr double kMicrosPerSecond = 1000000.0;
+constexpr double kMaxInstructionTime = 65535.0;
+constexpr int kTimeMultiplier = 1;
+int timeMultiplier = kTimeMultiplier;
+constexpr int kTolerance = 5000;
+constexpr int kEncoderPPR = 14400;
+constexpr float defaultKP = 0.1f;
+constexpr float defaultKD = 0.1f;
 
-
+/**
+*
+* @author Emad Muzaffar
+*/
 struct Instruction {
     uint16_t speed;
     uint16_t time;
@@ -52,6 +65,10 @@ struct Instruction {
         : speed(speed), time(time), direction(direction) {}
 };
 
+/**
+*
+* @author Emad Muzaffar
+*/
 struct Config {
     float maxMotorRPM;
     int timeMultiplier;
@@ -59,21 +76,26 @@ struct Config {
     int encoderPPR;
     float kP;
     float kD;
-    Config() : maxMotorRPM(30.0f), timeMultiplier(1), tolerance(5000), encoderPPR(14400), kP(0.1f), kD(0.1f) {}
+    Config() : maxMotorRPM(kMaxMotorRPM), timeMultiplier(kTimeMultiplier), tolerance(kTolerance), encoderPPR(kEncoderPPR), kP(defaultKP), kD(defaultKD) {}
     Config(const float maxMotorRPM, const int timeMultiplier, const int tolerance, const int encoderPPR, const float kP, const float kD)
         : maxMotorRPM(maxMotorRPM),
           timeMultiplier(timeMultiplier),
           tolerance(tolerance),
-          encoderPPR(encoderPPR),
+          encoderPPR(encoderPPR * 4),
           kP(kP),
           kD(kD) {}
 };
 
+/**
+*
+* @author Emad Muzaffar
+*/
 class Safetynet {
-    friend class Motor;
+    friend class Motor; //Allow motor to access private
 
-    int32_t tolerance = 5000; //TODO: MAKE CONFIGURABLE
-    int32_t encoderPPR = 14400; //TODO: MAKE CONFIGURABLE and multiply by 4 on input
+    //Internal variables for safetynet to store data.
+    int32_t tolerance = kTolerance;
+    int32_t encoderPPR = kEncoderPPR;
     const uint8_t enablePin;
     unsigned long startTime = 0;
     double tPosition = 0;
@@ -81,40 +103,116 @@ class Safetynet {
     int32_t tickOffset = 0;
     bool eStopped = false;
 
-    static float calculateInstructionDistance(const Instruction &instruction) {
-        float distance = static_cast<float>(instruction.speed) * (static_cast<float>(instruction.time) * static_cast<float>(timeMultiplier));
-        if (instruction.direction == 1) {
-            distance = -distance;
-        }
-        return distance;
+    /**
+    *
+    * @author Emad Muzaffar
+    */
+    static double absoluteValue(const double value) {
+        return value < 0.0 ? -value : value;
     }
 
-    static float calculateInstructionDistance(const Instruction &instruction, const unsigned long elapsedTime) {
-        float distance = static_cast<float>(instruction.speed) * (static_cast<float>(elapsedTime));
-        if (instruction.direction == 1) {
-            distance = -distance;
-        }
-        return distance;
+    /**
+    *
+    * @author Emad Muzaffar
+    */
+    static double directionSign(const Instruction &instruction) {
+        return instruction.direction == 1 ? -1.0 : 1.0;
     }
 
+    /**
+    *
+    * @author Emad Muzaffar
+    */
+    static double instructionDurationMs(const Instruction &instruction) {
+        return static_cast<double>(instruction.time) * static_cast<double>(timeMultiplier);
+    }
+
+    /**
+    *
+    * @author Emad Muzaffar
+    */
+    static double calculateInstructionDistance(const Instruction &instruction) {
+        const double durationSeconds = instructionDurationMs(instruction) / kMillisPerSecond;
+        return directionSign(instruction) * static_cast<double>(instruction.speed) * durationSeconds;
+    }
+
+    /**
+    *
+    * @author Emad Muzaffar
+    */
+    static double calculateInstructionDistance(const Instruction &instruction, const unsigned long elapsedMicros) {
+        const double maxElapsedMicros = instructionDurationMs(instruction) * kMillisPerSecond;
+        const double clampedElapsedMicros = std::min(static_cast<double>(elapsedMicros), maxElapsedMicros);
+        const double elapsedSeconds = clampedElapsedMicros / kMicrosPerSecond;
+        return directionSign(instruction) * static_cast<double>(instruction.speed) * elapsedSeconds;
+    }
+
+    /**
+    *
+    * @author Emad Muzaffar
+    */
+    double degreesToTicks(const double degrees) const {
+        return degrees / kDegreesPerRotation * static_cast<double>(encoderPPR);
+    }
+
+    /**
+    *
+    * @author Emad Muzaffar
+    */
+    double ticksToDegrees(const int32_t ticks) const {
+        if (encoderPPR == 0) {
+            return 0.0;
+        }
+        return static_cast<double>(ticks) * kDegreesPerRotation / static_cast<double>(encoderPPR);
+    }
+
+    /**
+    *
+    * @author Emad Muzaffar
+    */
+    double currentTargetDegrees() const {
+        return tPosition - calculateInstructionDistance(cInstruction) +
+            calculateInstructionDistance(cInstruction, micros() - startTime);
+    }
+
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     bool checkTolerance() const {
-        const double ctPosition = tPosition + -calculateInstructionDistance(cInstruction) + calculateInstructionDistance(cInstruction, micros() - startTime);
-        const int32_t error = abs(getTicks() - static_cast<int32_t>(ctPosition));
+        const double targetTicks = degreesToTicks(currentTargetDegrees());
+        const double error = absoluteValue(static_cast<double>(getTicks()) - targetTicks);
         return error >= tolerance;
     }
 
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     bool checkPositionSafety() const {
         return abs(getTicks()) > 29000;
     }
 
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     void applyConfig(const Config &config) {
         tolerance = config.tolerance;
         encoderPPR = config.encoderPPR;
     }
 
 public:
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     explicit Safetynet(const uint8_t enablePin) : enablePin(enablePin) {}
 
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     static void setupEncoder() {
         pmc_enable_periph_clk(ID_TC0);
 
@@ -138,34 +236,61 @@ public:
             TC_CCR_SWTRG;
     }
 
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     int32_t getTicks() const {
         return static_cast<int32_t>(TC0->TC_CHANNEL[0].TC_CV) - tickOffset;
     }
 
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     static int32_t getRawTicks() {
         return static_cast<int32_t>(TC0->TC_CHANNEL[0].TC_CV);
     }
 
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     void setTickOffset() {
         tickOffset = getRawTicks();
     }
 
-
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     void reportOverride() {
         tPosition += -calculateInstructionDistance(cInstruction);
         tPosition += calculateInstructionDistance(cInstruction, micros() - startTime);
     }
 
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     void reportInstruction(const Instruction &instruction) {
         startTime = micros();
         cInstruction = instruction;
         tPosition += calculateInstructionDistance(instruction);
     }
 
+    /**
+    *
+    * @author Emad Muzaffar
+    */
     double getTargetTicks() const {
-        return tPosition / 360 * encoderPPR;
+        return degreesToTicks(tPosition);
     }
 
+    /**
+    * Enable the M
+    * @author Emad Muzaffar
+    */
     void enable() const {
         if (eStopped) {
             disable();
@@ -175,18 +300,28 @@ public:
         digitalWrite(this->enablePin, HIGH);
     }
 
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void disable() const {
         digitalWrite(this->enablePin, LOW);
     }
 
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void eStop() {
         eStopped = true;
         disable();
     }
 
-
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void update() {
-        SerialUSB.println(getTicks()); //TODO: debug
         if (checkPositionSafety()) {
             disable();
             eStopped = true;
@@ -201,6 +336,8 @@ public:
 
 
 class Motor {
+    
+    //Enum for motor update FSM
     enum motorState{
         pCORRECTING,
         CORRECTING,
@@ -220,14 +357,22 @@ class Motor {
     double pidTarget = 0;
     double lastError = 0;
     double pidTime = 0;
-    float kP = 0.1; //TODO: MAKE CONFIGURABLE
-    float kD = 0.1; //TODO: MAKE CONFIGURABLE
-
+    float kP = defaultKP;
+    float kD = defaultKD;
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void setTimer(const uint16_t timerLength) {
         startTime = millis();
-        durationMs = timerLength * timeMultiplier;
+        durationMs = static_cast<uint32_t>(timerLength) * static_cast<uint32_t>(timeMultiplier);
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     bool timerComplete() {
         if (millis() - startTime >= durationMs) {
             running = false;
@@ -236,18 +381,46 @@ class Motor {
         running = true;
         return false;
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     static float getVelocity(const uint16_t velocityDegPerSec) {
+        if (MaxMotorRPM <= 0.0f) {
+            return 0.0f;
+        }
         const float targetRPM = static_cast<float>(velocityDegPerSec) / 6.0f;
-        return constrain(targetRPM, 0.0f, kMaxMotorRPM);
+        return std::min(std::max(targetRPM, 0.0f), MaxMotorRPM);
     }
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
+    void writePwmForRPM(const double rpm) const {
+        if (MaxMotorRPM <= 0.0f) {
+            analogWrite(this->pwmPin, 0);
+            return;
+        }
 
-    void setPWM(const uint16_t velocityDegPerSec) const {
-        const float targetRPM = getVelocity(velocityDegPerSec);
-        const auto duty = static_cast<uint16_t>((targetRPM / kMaxMotorRPM) * kMaxPwm);
+        const double clampedRPM = std::min(std::max(rpm, 0.0), static_cast<double>(MaxMotorRPM));
+        const auto duty = static_cast<uint16_t>((clampedRPM / static_cast<double>(MaxMotorRPM)) * kMaxPwm);
         analogWrite(this->pwmPin, duty);
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
+    void setPWM(const uint16_t velocityDegPerSec) const {
+        writePwmForRPM(getVelocity(velocityDegPerSec));
+    }
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void setDirection(const uint16_t direction) const {
         if (direction == 0) {
             digitalWrite(directionPin, HIGH);
@@ -255,39 +428,54 @@ class Motor {
             digitalWrite(directionPin, LOW);
         }
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void pid() {
-        const double error = safetynet.getTicks() - pidTarget;
-        if (lastError == 0) {
-            lastError = error;
-        }
-
-        const double dt = micros() - pidTime;
-
+        const auto nowMicros = static_cast<double>(micros());
+        const double error = static_cast<double>(safetynet.getTicks()) - pidTarget;
+        const double dt = nowMicros - pidTime;
         const double p = error;
-
-        const double d = (error - lastError) / dt;
-
+        const double d = pidTime > 0.0 && dt > 0.0 ? (error - lastError) / dt : 0.0;
         const double targetRPM = p * kP + d * kD;
-        const auto duty = static_cast<uint16_t>((targetRPM / kMaxMotorRPM) * kMaxPwm);
-        analogWrite(this->pwmPin, duty);
-        pidTime = micros();
+
+        if (targetRPM > 0.0) {
+            setDirection(1);
+        } else if (targetRPM < 0.0) {
+            setDirection(0);
+        }
+        writePwmForRPM(targetRPM < 0.0 ? -targetRPM : targetRPM);
+        pidTime = nowMicros;
         lastError = error;
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void correctionPID() {
         pidTarget = safetynet.getTargetTicks();
         pid();
     }
 
-
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void pwmStop() {
         analogWrite(this->pwmPin, 0);
+        running = false;
         pidTarget = 0;
         lastError = 0;
         pidTime = 0;
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void internalRunInstruction(const Instruction &instruction) {
         setDirection(instruction.direction);
         setPWM(instruction.speed);
@@ -297,6 +485,11 @@ class Motor {
     }
 
 public:
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     Safetynet safetynet;
     explicit Motor(const uint8_t directionPin, const uint8_t pwmPin, const uint8_t enablePin)
         : directionPin(directionPin), pwmPin(pwmPin), safetynet(enablePin) {
@@ -305,7 +498,11 @@ public:
         pinMode(pwmPin, OUTPUT);
         pinMode(enablePin, OUTPUT);
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     bool checkStatusAndUpdate() {
         safetynet.update();
         switch (motorState) {
@@ -345,7 +542,11 @@ public:
                 return false;
         }
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void setInstructions(const Instruction * const nInstructions, const size_t instructionCount) {
         cInstruction = 0;
         instructions.clear();
@@ -363,22 +564,36 @@ public:
             internalRunInstruction(instructions[cInstruction]);
         }
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void home(const uint16_t speed) {
         const int32_t cPos = safetynet.getTicks();
-        const double cPosDegrees = static_cast<double>(cPos) / 40;
-        const double time = cPosDegrees / speed;
+        if (speed == 0 || cPos == 0 || timeMultiplier <= 0) {
+            pwmStop();
+            return;
+        }
+
+        const double cPosDegrees = safetynet.ticksToDegrees(cPos);
+        const double timeSeconds = Safetynet::absoluteValue(cPosDegrees) / static_cast<double>(speed);
+        const double timeUnits = timeSeconds * kMillisPerSecond / static_cast<double>(timeMultiplier);
         Instruction instruction[1];
         instruction[0].speed = speed;
-        instruction[0].time = static_cast<uint16_t>(time);
-        if (cPos > 0) {
+        instruction[0].time = static_cast<uint16_t>(std::min(timeUnits + 0.999, kMaxInstructionTime));
+        if (cPos >= 0) {
             instruction[0].direction = 1;
-        } else if (cPos < 0) {
+        } else {
             instruction[0].direction = 0;
         }
         setInstructions(instruction, 1);
     }
-
+    
+    /**
+    * 
+    * @author Emad Muzaffar
+    */
     void applyConfig(const Config &config) {
         kP = config.kP;
         kD = config.kD;
@@ -414,6 +629,8 @@ enum ReadState {
 ReadState readState = OFF;
 uint8_t macroInstructionLength = 0;
 uint32_t hostTransmitTime = 0;
+uint32_t lastHostEchoTime = 0;
+uint8_t lastHostEchoState = LOW;
 
 /**
  * From SanWorks example
@@ -438,12 +655,20 @@ void returnModuleInfo() {
     Serial1COM.writeByte(0);
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void applyConfig(const Config &config) {
-    kMaxMotorRPM = config.maxMotorRPM;
+    MaxMotorRPM = config.maxMotorRPM;
     timeMultiplier = config.timeMultiplier;
     motor.applyConfig(config);
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void startReadingMotorInstructions(const uint8_t instructionCount) {
     motorInstructionBytesRead = 0;
     motorInstructionsExpected = instructionCount;
@@ -458,6 +683,10 @@ void startReadingMotorInstructions(const uint8_t instructionCount) {
     }
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void startReadingMacroInstructions(const uint8_t macroCode) {
     if (macroCode == kMotorHomeOpCode) {
         readState = MACRO;
@@ -469,18 +698,30 @@ void startReadingMacroInstructions(const uint8_t macroCode) {
     }
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void startReadingConfig() {
     readState = CONFIG;
     configBytesRead = 0;
     receivedConfig = Config();
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 uint16_t uint16ValueAt(const uint8_t * const byteBuffer, const uint8_t valueIndex) {
     const uint8_t byteIndex = valueIndex * kBytesPerUint16;
     return static_cast<uint16_t>(byteBuffer[byteIndex]) |
         (static_cast<uint16_t>(byteBuffer[byteIndex + 1]) << 8);
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void finishMotorInstructions() {
     if (readState == ON) {
         motor.setInstructions(receivedInstructions.data(), receivedInstructions.size());
@@ -492,25 +733,32 @@ void finishMotorInstructions() {
     motorInstructionBytesRead = 0;
     motorInstructionsExpected = 0;
     macroInstructionLength = 0;
-    Serial1COM.writeByte(2);
     readState = OFF;
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void finishConfig() {
     applyConfig(receivedConfig);
     //reset system
     receivedConfig = Config();
     std::fill_n(configByteBuffer, kConfigLength, 0);
     configBytesRead = 0;
-    Serial1COM.writeByte(2);
     readState = OFF;
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void readConfigByte() {
     if (!Serial1COM.available()) {
         return;
     }
     configByteBuffer[configBytesRead] = Serial1COM.readByte();
+    Serial1COM.writeByte(2);
     configBytesRead++;
 
     if (configBytesRead == kConfigLength) {
@@ -526,22 +774,15 @@ void readConfigByte() {
             encoderPPR,
             kP,
             kD);
-        configBytesRead = 0;
-
-        //TODO: debug
-        SerialUSB.println(maxMotorRPM);
-        SerialUSB.println(configuredTimeMultiplier);
-        SerialUSB.println(tolerance);
-        SerialUSB.println(encoderPPR);
-        SerialUSB.println(kP);
-        SerialUSB.println(kD);
-
         finishConfig();
     }
 }
 
 
-
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void readMotorInstructionByte(const uint8_t motorInstructionLength = kMotorInstructionLength) {
     if (!Serial1COM.available()) {
         return;
@@ -560,10 +801,8 @@ void readMotorInstructionByte(const uint8_t motorInstructionLength = kMotorInstr
             direction = uint16ValueAt(motorInstructionByteBuffer, 2);
         }
         receivedInstructions.emplace_back(speed, time, direction);
-        motorInstructionBytesRead = 0;
         Serial1COM.writeByte(2);
-        //TODO: debug
-        SerialUSB.println(speed); SerialUSB.println(time); SerialUSB.println(direction);
+        motorInstructionBytesRead = 0;
 
         if (receivedInstructions.size() == motorInstructionsExpected) {
             finishMotorInstructions();
@@ -571,6 +810,10 @@ void readMotorInstructionByte(const uint8_t motorInstructionLength = kMotorInstr
     }
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void hostTransmit() {
     const uint32_t nowMicros = micros();
 
@@ -581,22 +824,45 @@ void hostTransmit() {
     }
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void hostUpdate() {
-    if (millis() > kHostStartTolerance) {
-        if (digitalRead(kHostReceivePin) != digitalRead(kHostTransmitPin)) {
-            if (micros() - hostTransmitTime > kCrossCheckMaxNoResponseTime) {
-                motor.safetynet.eStop();
-            }
-        } else {
-            hostTransmit();
-        }
+    const uint32_t nowMicros = micros();
+
+    if (millis() <= kHostStartTolerance) {
+        lastHostEchoState = digitalRead(kHostReceivePin);
+        lastHostEchoTime = nowMicros;
+        return;
+    }
+
+    hostTransmit();
+
+    const uint8_t echoState = digitalRead(kHostReceivePin);
+    if (echoState != lastHostEchoState) {
+        lastHostEchoState = echoState;
+        lastHostEchoTime = nowMicros;
+        return;
+    }
+
+    if (nowMicros - lastHostEchoTime > kCrossCheckMaxNoResponseTime) {
+        motor.safetynet.eStop();
     }
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void clientUpdate() {
     digitalWrite(kClientTransmitPin, digitalRead(kClientReceivePin));
 }
 
+/**
+ *  
+ * @author Emad Muzaffar
+*/
 void crossCheckUpdate() {
     hostUpdate();
     clientUpdate();
@@ -616,24 +882,17 @@ void setup() {
     pinMode(kHostReceivePin, INPUT);
     pinMode(kClientTransmitPin, OUTPUT);
     pinMode(kClientReceivePin, INPUT);
-    //TODO: debug
-    SerialUSB.begin(115200);
+    digitalWrite(kHostTransmitPin, LOW);
+    digitalWrite(kClientTransmitPin, LOW);
+    lastHostEchoState = digitalRead(kHostReceivePin);
+    lastHostEchoTime = micros();
 }
 
 /**
  * Main loop
  * @author Emad Muzaffar
 */
-//TODO: debug
-uint32_t oldMicros = 0;
-
 void loop() {
-
-    //TODO: debug
-    SerialUSB.println(micros() - oldMicros);
-    oldMicros = micros();
-
-
     if (readState == ON) {
         readMotorInstructionByte();
     } else if (readState == MACRO) {
