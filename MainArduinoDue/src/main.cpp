@@ -16,6 +16,7 @@
 #include <vector>
 #include <ArCom/ArCOM.h>
 
+///Declare Constants
 constexpr uint8_t kDirectionPin = 23;
 constexpr uint8_t kPwmPin = 6;
 constexpr uint8_t kEnablePin = 24;
@@ -53,7 +54,8 @@ constexpr float defaultKP = 0.1f;
 constexpr float defaultKD = 0.1f;
 
 /**
-*
+* Struct to hold the information required for a motor instruction
+* Used to pass data into the motor class
 * @author Emad Muzaffar
 */
 struct Instruction {
@@ -66,7 +68,7 @@ struct Instruction {
 };
 
 /**
-*
+* 
 * @author Emad Muzaffar
 */
 struct Config {
