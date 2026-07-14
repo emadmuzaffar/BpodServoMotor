@@ -53,11 +53,11 @@ constexpr int kEncoderPPR = 14400;
 constexpr float defaultKP = 0.1f;
 constexpr float defaultKD = 0.1f;
 constexpr bool kCorrectionEnabled = true;
-constexpr bool kUsbDebugEnabled = true; // Set false to remove USB control-flow output.
+constexpr bool kUsbDebugEnabled = true; // Central switch for all USB debugging.
 
 /**
- * Event-only USB debugging. Messages start with [FLOW][caller] so they are
- * easy to filter without printing on every pass through loop().
+ * USB debugging. Messages start with [FLOW][caller] so they are easy to
+ * identify and filter in the serial monitor.
  */
 void usbDebug(const __FlashStringHelper *message) {
     if (kUsbDebugEnabled) {
@@ -349,9 +349,11 @@ public:
     */
     void update() {
         if (checkPositionSafety()) {
+            usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
             // eStop();
         }
         if (checkTolerance()) {
+            usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
             // eStop();
         }
 
@@ -920,6 +922,7 @@ void hostUpdate() {
     }
 
     if (nowMicros - lastHostEchoTime > kCrossCheckMaxNoResponseTime) {
+        usbDebug(F("[FLOW][hostUpdate] eStop suppressed: host echo timed out"));
         // motor.safetynet.eStop(); //TODO: ESTOPPED HERE
     }
 }
@@ -948,7 +951,9 @@ void crossCheckUpdate() {
  * @author Emad Muzaffar
 */
 void setup() {
-    SerialUSB.begin(115200);
+    if (kUsbDebugEnabled) {
+        SerialUSB.begin(115200);
+    }
     usbDebug(F("[FLOW][setup] USB debugging started"));
     Serial1.begin(1312500); //specific baud rate for Bpod
     usbDebug(F("[FLOW][setup] Bpod Serial1 started"));
