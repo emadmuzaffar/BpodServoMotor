@@ -529,6 +529,7 @@ public:
         pinMode(directionPin, OUTPUT);
         pinMode(pwmPin, OUTPUT);
         pinMode(enablePin, OUTPUT);
+        usbDebug(F("[FLOW][Motor::Motor] constructor run"));
     }
     
     /**
