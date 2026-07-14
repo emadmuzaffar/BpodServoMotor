@@ -24,7 +24,6 @@ uint8_t lastHostEchoState = LOW;
 //eStop bool
 bool eStopBool = false;
 
-// Replace this with your real e-stop function
 void eStop() {
     digitalWrite(kEnablePin, LOW);
     Serial.println("eStop");
