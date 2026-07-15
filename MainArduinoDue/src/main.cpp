@@ -370,20 +370,20 @@ public:
     * @author Emad Muzaffar
     */
     void update() {
-        if (millis() == 500) {
-            SerialUSB.println(getTicks());
-            SerialUSB.println(getTargetTicks());
-        }
+
+        SerialUSB.println(getTicks());
+        SerialUSB.println(getTargetTicks());
+
         if (eStopped == true) {
             return;
         }
         if (checkPositionSafety()) {
             usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
-            // eStop();
+            eStop();
         }
         if (checkTolerance()) {
             usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
-            eStop();
+            // eStop();
         }
 
     }
