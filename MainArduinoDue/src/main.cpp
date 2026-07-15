@@ -378,8 +378,8 @@ public:
             return;
         }
         if (checkPositionSafety()) {
-            usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
-            eStop();
+            // usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
+            // eStop();
         }
         if (checkTolerance()) {
             // usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
