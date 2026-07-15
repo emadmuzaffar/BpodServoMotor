@@ -39,7 +39,7 @@ constexpr byte kConfigOpCode = 254;
 constexpr uint8_t kBytesPerUint16 = 2;
 constexpr uint8_t kMotorInstructionLength = 2 * kBytesPerUint16 + sizeof(uint8_t);
 constexpr uint8_t kMotorHomeInstructionLength = kBytesPerUint16;
-constexpr uint8_t kConfigFieldCount = 7;
+constexpr uint8_t kConfigFieldCount = 8;
 constexpr uint8_t kConfigLength = kConfigFieldCount * kBytesPerUint16;
 constexpr uint32_t kHostStartTolerance = 300;
 constexpr uint32_t kCrossCheckMaxNoResponseTime = 5000;
@@ -48,15 +48,24 @@ constexpr double kDegreesPerRotation = 360.0;
 constexpr double kMillisPerSecond = 1000.0;
 constexpr double kMicrosPerSecond = 1000000.0;
 constexpr double kMaxInstructionTime = 65535.0;
+constexpr float kConfigGainScale = 1000.0f;
 constexpr int kTimeMultiplier = 1;
 int timeMultiplier = kTimeMultiplier;
-constexpr int kTolerance = 5000;
+constexpr int kTolerance = 300;
 constexpr int kEncoderPPR = 14400;
 constexpr float defaultKP = 0.1f;
 constexpr float defaultKD = 0.1f;
 constexpr bool kCorrectionEnabled = true;
 constexpr bool kUsbDebugEnabled = true; // Central switch for all USB debugging.
 constexpr uint32_t kUsbDebugStartupDelayMs = 500;
+constexpr int32_t kMaxRotation = kEncoderPPR * 2;
+
+constexpr int32_t rotationLimitTicks(const uint16_t maxRotationDegrees, const uint16_t encoderPPR) {
+    // The quadrature decoder counts four edges per encoder pulse. Add half a
+    // degree-of-revolution denominator so integer division rounds to nearest.
+    return static_cast<int32_t>(
+        (static_cast<int64_t>(maxRotationDegrees) * encoderPPR * 4 + 180) / 360);
+}
 
 /**
  * USB debugging. Messages start with [FLOW][caller] so they are easy to
@@ -98,18 +107,20 @@ struct Config {
     int timeMultiplier;
     int tolerance;
     int encoderPPR;
+    int32_t maxRotation;
     float kP;
     float kD;
     bool correctionEnabled;
-    Config() : maxMotorRPM(kMaxMotorRPM), timeMultiplier(kTimeMultiplier), tolerance(kTolerance), encoderPPR(kEncoderPPR), kP(defaultKP), kD(defaultKD), correctionEnabled(kCorrectionEnabled) {}
-    Config(const float maxMotorRPM, const int timeMultiplier, const int tolerance, const int encoderPPR, const float kP, const float kD, const bool correctionEnabled)
+    Config() : maxMotorRPM(kMaxMotorRPM), timeMultiplier(kTimeMultiplier), tolerance(kTolerance), encoderPPR(kEncoderPPR), maxRotation(kMaxRotation), kP(defaultKP), kD(defaultKD), correctionEnabled(kCorrectionEnabled) {}
+    Config(const float maxMotorRPM, const int timeMultiplier, const int tolerance, const int encoderPPR, const int maxRotation, const float kP, const float kD, const bool correctionEnabled)
         : maxMotorRPM(maxMotorRPM),
-          timeMultiplier(timeMultiplier),
-          tolerance(tolerance),
-          encoderPPR(encoderPPR * 4),
-          kP(kP),
-          kD(kD),
-          correctionEnabled(correctionEnabled) {}
+            timeMultiplier(timeMultiplier),
+            tolerance(tolerance),
+            encoderPPR(static_cast<int32_t>(encoderPPR) * 4),
+            maxRotation(rotationLimitTicks(maxRotation, encoderPPR)),
+            kP(kP),
+            kD(kD),
+            correctionEnabled(correctionEnabled) {}
 };
 
 /**
@@ -122,6 +133,7 @@ class Safetynet {
     //Internal variables for safetynet to store data.
     int32_t tolerance = kTolerance;
     int32_t encoderPPR = kEncoderPPR;
+    int32_t maxRotation = kMaxRotation;
     const uint8_t enablePin;
     unsigned long startTime = 0;
     double tPosition = 0;
@@ -216,7 +228,7 @@ class Safetynet {
     * @author Emad Muzaffar
     */
     bool checkPositionSafety() const {
-        return abs(getTicks()) > 29000;
+        return abs(getTicks()) > maxRotation;
     }
 
     /**
@@ -226,6 +238,7 @@ class Safetynet {
     void applyConfig(const Config &config) {
         tolerance = config.tolerance;
         encoderPPR = config.encoderPPR;
+        maxRotation = config.maxRotation;
     }
 
 public:
@@ -847,18 +860,25 @@ void readConfigByte() {
         return;
     }
     configByteBuffer[configBytesRead] = Serial1COM.readByte();
-    Serial1COM.writeByte(2);
     configBytesRead++;
     usbDebugValue(F("[FLOW][readConfigByte] bytes received="), configBytesRead);
+
+    // MATLAB sends one uint16 field per config state, so acknowledge only
+    // after both bytes arrive. This keeps its eight states aligned with the
+    // firmware's eight config fields.
+    if (configBytesRead % kBytesPerUint16 == 0) {
+        Serial1COM.writeByte(2);
+    }
 
     if (configBytesRead == kConfigLength) {
         const uint16_t maxMotorRPM = uint16ValueAt(configByteBuffer, 0);
         const uint16_t configuredTimeMultiplier = uint16ValueAt(configByteBuffer, 1);
         const uint16_t tolerance = uint16ValueAt(configByteBuffer, 2);
         const uint16_t encoderPPR = uint16ValueAt(configByteBuffer, 3);
-        const uint16_t kP = uint16ValueAt(configByteBuffer, 4);
-        const uint16_t kD = uint16ValueAt(configByteBuffer, 5);
-        const uint16_t correctiveInt = uint16ValueAt(configByteBuffer, 6);
+        const uint16_t maxRotation = uint16ValueAt(configByteBuffer, 4);
+        const float kP = static_cast<float>(uint16ValueAt(configByteBuffer, 5)) / kConfigGainScale;
+        const float kD = static_cast<float>(uint16ValueAt(configByteBuffer, 6)) / kConfigGainScale;
+        const uint16_t correctiveInt = uint16ValueAt(configByteBuffer, 7);
         bool correctionEnabled = true;
         if (correctiveInt == 0) {
             correctionEnabled = false;
@@ -868,6 +888,7 @@ void readConfigByte() {
             configuredTimeMultiplier,
             tolerance,
             encoderPPR,
+            maxRotation,
             kP,
             kD,
             correctionEnabled);
