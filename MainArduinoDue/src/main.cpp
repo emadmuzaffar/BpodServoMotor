@@ -371,8 +371,8 @@ public:
     */
     void update() {
 
-        SerialUSB.println(getTicks());
-        SerialUSB.println(getTargetTicks());
+        // Serial.println(getTicks());
+        // Serial.println(getTargetTicks());
 
         if (eStopped == true) {
             return;
