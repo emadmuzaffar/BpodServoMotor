@@ -360,8 +360,8 @@ public:
     * @author Emad Muzaffar
     */
     void eStop() {
-        // eStopped = true;
-        // disable();
+        eStopped = true;
+        disable();
         usbDebug(F("[FLOW][Safetynet::eStop] emergency-stop path entered"));
     }
 
@@ -371,12 +371,12 @@ public:
     */
     void update() {
         if (checkPositionSafety()) {
-            // usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
-            // eStop();
+            usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
+            eStop();
         }
         if (checkTolerance()) {
-            // usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
-            // eStop();
+            usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
+            eStop();
         }
 
     }
