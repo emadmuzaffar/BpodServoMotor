@@ -361,8 +361,8 @@ public:
     */
     void eStop() {
         eStopped = true;
-        disable();
-        usbDebug(F("[FLOW][Safetynet::eStop] emergency-stop path entered"));
+        // disable();
+        // usbDebug(F("[FLOW][Safetynet::eStop] emergency-stop path entered"));
     }
 
     /**
