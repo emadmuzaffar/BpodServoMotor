@@ -286,7 +286,7 @@ public:
     * @author Emad Muzaffar
     */
     int32_t getTicks() const {
-        return static_cast<int32_t>(TC0->TC_CHANNEL[0].TC_CV) - tickOffset;
+        return -static_cast<int32_t>(TC0->TC_CHANNEL[0].TC_CV) - tickOffset;
     }
 
     /**
@@ -294,7 +294,7 @@ public:
     * @author Emad Muzaffar
     */
     static int32_t getRawTicks() {
-        return static_cast<int32_t>(TC0->TC_CHANNEL[0].TC_CV);
+        return -static_cast<int32_t>(TC0->TC_CHANNEL[0].TC_CV);
     }
 
     /**
@@ -370,9 +370,16 @@ public:
     * @author Emad Muzaffar
     */
     void update() {
+        if (millis() == 500) {
+            SerialUSB.println(getTicks());
+            SerialUSB.println(getTargetTicks());
+        }
+        if (eStopped == true) {
+            return;
+        }
         if (checkPositionSafety()) {
             usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
-            eStop();
+            // eStop();
         }
         if (checkTolerance()) {
             usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
