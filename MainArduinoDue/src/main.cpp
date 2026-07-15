@@ -19,7 +19,7 @@
 
 ///Declare Constants
 constexpr uint8_t kDirectionPin = 7;
-constexpr uint8_t kPwmPin = 6;
+constexpr uint8_t kFrequencyOutputPin = 6; // ClearPath Input B; D6 is the Due's PWML7 output.
 constexpr uint8_t kEnablePin = 53;
 constexpr uint8_t kHostTransmitPin = 52;
 constexpr uint8_t kHostReceivePin = 50;
@@ -27,8 +27,6 @@ constexpr uint8_t kClientTransmitPin = 48;
 constexpr uint8_t kClientReceivePin = 46;
 constexpr float kMaxMotorRPM = 120; // Must match the ClearPath MSP setup.
 float MaxMotorRPM = kMaxMotorRPM;
-constexpr uint16_t kMaxPwm = 65535;
-constexpr double kPwmCalibration = 1.004; // Compensates for the measured 0.2-0.5% low PWM output.
 constexpr byte kModuleScanOpCode = 255;
 constexpr byte kDisableMotorOpCode = 249;
 constexpr byte kEnableMotorOpCode = 250;
@@ -59,6 +57,14 @@ constexpr bool kCorrectionEnabled = true;
 constexpr bool kUsbDebugEnabled = true; // Central switch for all USB debugging.
 constexpr uint32_t kUsbDebugStartupDelayMs = 500;
 constexpr int32_t kMaxRotation = kEncoderPPR * 2;
+constexpr uint32_t kFrequencyPwmChannel = PWM_CH7;
+constexpr uint32_t kWaveformClockHz = VARIANT_MCK; // Run the waveform generator directly from the 84 MHz master clock.
+constexpr uint32_t kMinFrequency = 400000;
+constexpr uint32_t kMaxFrequency = 600000;
+constexpr uint32_t kFrequencyRange = kMaxFrequency - kMinFrequency;
+
+static_assert(kMinFrequency >= 20, "ClearPath MCPV frequency input must be at least 20 Hz");
+static_assert(kMaxFrequency <= 700000, "ClearPath MCPV frequency input must not exceed 700 kHz");
 
 constexpr int32_t rotationLimitTicks(const uint16_t maxRotationDegrees, const uint16_t encoderPPR) {
     // The quadrature decoder counts four edges per encoder pulse. Add half a
@@ -333,7 +339,7 @@ public:
     }
 
     /**
-    * Enable the M
+    * Enable the Motor
     * @author Emad Muzaffar
     */
     void enable() const {
@@ -404,7 +410,6 @@ class Motor {
     //Internal variables for motor to store data.
     motorState motorState = INACTIVE;
     const uint8_t directionPin;
-    const uint8_t pwmPin;
     unsigned long startTime = 0;
     uint32_t durationMs = 0;
     size_t cInstruction = 0;
@@ -451,29 +456,63 @@ class Motor {
         return std::min(std::max(targetRPM, 0.0f), MaxMotorRPM);
     }
 
-    /**
-    *
-    * @author Emad Muzaffar
-    */
-    void writePwmForRPM(const double rpm) const {
-        if (MaxMotorRPM <= 0.0f) {
-            analogWrite(this->pwmPin, 0);
-            return;
-        }
+    static void setFrequencyOutput(const uint32_t requestedFrequencyHz) {
+        const uint32_t frequencyHz = std::min(
+            std::max(requestedFrequencyHz, kMinFrequency),
+            kMaxFrequency);
+        // Round to the nearest whole waveform period. At the configured endpoints,
+        // 84 MHz / 210 = 400 kHz and 84 MHz / 140 = 600 kHz exactly.
+        const auto period = static_cast<uint16_t>((kWaveformClockHz + frequencyHz / 2) / frequencyHz);
 
-        const double clampedRPM = std::min(std::max(rpm, 0.0), static_cast<double>(MaxMotorRPM));
+        PWMC_SetPeriod(PWM_INTERFACE, kFrequencyPwmChannel, period);
+        PWMC_SetDutyCycle(PWM_INTERFACE, kFrequencyPwmChannel, period / 2);
+    }
 
-        const auto duty = static_cast<uint16_t>(std::lround(clampedRPM / static_cast<double>(MaxMotorRPM) * kMaxPwm));
-
-        analogWrite(this->pwmPin, duty);
+    static void setupFrequencyOutput() {
+        // The SAM3X PWM peripheral is used only as a hardware waveform
+        // generator here; frequency, rather than duty cycle, commands velocity.
+        pmc_set_writeprotect(false);
+        pmc_enable_periph_clk(PWM_INTERFACE_ID);
+        // Connect Arduino pin 6 to its PWML7 peripheral.
+        PIO_Configure(
+            g_APinDescription[kFrequencyOutputPin].pPort,
+            g_APinDescription[kFrequencyOutputPin].ulPinType,
+            g_APinDescription[kFrequencyOutputPin].ulPin,
+            g_APinDescription[kFrequencyOutputPin].ulPinConfiguration
+        );
+        PWMC_ConfigureChannel(
+            PWM_INTERFACE,
+            kFrequencyPwmChannel,
+            PWM_CMR_CPRE_MCK,
+            0,
+            0);
+        setFrequencyOutput(kMinFrequency);
+        PWMC_EnableChannel(PWM_INTERFACE, kFrequencyPwmChannel);
     }
 
     /**
     *
     * @author Emad Muzaffar
     */
-    void setPWM(const uint16_t velocityDegPerSec) const {
-        writePwmForRPM(getVelocity(velocityDegPerSec));
+    void writeFrequencyForRPM(const double rpm) const {
+        if (MaxMotorRPM <= 0.0f) {
+            setFrequencyOutput(kMinFrequency);
+            return;
+        }
+
+        const double clampedRPM = std::min(std::max(rpm, 0.0), static_cast<double>(MaxMotorRPM));
+        const auto frequencyHz = static_cast<uint32_t>(std::lround(
+            static_cast<double>(kMinFrequency) +
+            clampedRPM / static_cast<double>(MaxMotorRPM) * static_cast<double>(kFrequencyRange)));
+        setFrequencyOutput(frequencyHz);
+    }
+
+    /**
+    *
+    * @author Emad Muzaffar
+    */
+    void setVelocityCommand(const uint16_t velocityDegPerSec) const {
+        writeFrequencyForRPM(getVelocity(velocityDegPerSec));
     }
 
     /**
@@ -505,7 +544,7 @@ class Motor {
         } else if (targetRPM < 0.0) {
             setDirection(0);
         }
-        writePwmForRPM(targetRPM < 0.0 ? -targetRPM : targetRPM);
+        writeFrequencyForRPM(targetRPM < 0.0 ? -targetRPM : targetRPM);
         pidTime = nowMicros;
         lastError = error;
     }
@@ -523,8 +562,8 @@ class Motor {
     *
     * @author Emad Muzaffar
     */
-    void pwmStop() {
-        analogWrite(this->pwmPin, 0);
+    void commandZeroVelocity() {
+        setFrequencyOutput(kMinFrequency);
         running = false;
         pidTarget = 0;
         lastError = 0;
@@ -540,7 +579,7 @@ class Motor {
         usbDebugValue(F("[FLOW][Motor::internalRunInstruction] time="), instruction.time);
         usbDebugValue(F("[FLOW][Motor::internalRunInstruction] direction="), instruction.direction);
         setDirection(instruction.direction);
-        setPWM(instruction.speed);
+        setVelocityCommand(instruction.speed);
         setTimer(instruction.time);
         motorState = pINSTRUCTED;
         usbDebug(F("[FLOW][Motor::internalRunInstruction] state -> pINSTRUCTED"));
@@ -554,13 +593,13 @@ public:
     * @author Emad Muzaffar
     */
     Safetynet safetynet;
-    explicit Motor(const uint8_t directionPin, const uint8_t pwmPin, const uint8_t enablePin)
-        : directionPin(directionPin), pwmPin(pwmPin), safetynet(enablePin) {}
+    explicit Motor(const uint8_t directionPin, const uint8_t enablePin)
+        : directionPin(directionPin), safetynet(enablePin) {}
 
     void begin() const {
         Safetynet::setupEncoder();
         pinMode(directionPin, OUTPUT);
-        pinMode(pwmPin, OUTPUT);
+        setupFrequencyOutput();
         safetynet.begin();
         usbDebug(F("[FLOW][Motor::begin] motor hardware initialized"));
     }
@@ -578,6 +617,7 @@ public:
             case pCORRECTING:
                 if (!correctionEnabled) {
                     motorState = INACTIVE;
+                    commandZeroVelocity();
                     usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] correction disabled; state -> INACTIVE"));
                     return false;
                 }
@@ -637,8 +677,8 @@ public:
         }
 
         if (instructions.empty()) {
-            usbDebug(F("[FLOW][Motor::setInstructions] instruction list empty; stopping PWM"));
-            pwmStop();
+            usbDebug(F("[FLOW][Motor::setInstructions] instruction list empty; commanding zero velocity"));
+            commandZeroVelocity();
         } else {
             if (running) {
                 usbDebug(F("[FLOW][Motor::setInstructions] active instruction overridden"));
@@ -658,7 +698,7 @@ public:
         usbDebugValue(F("[FLOW][Motor::home] requested speed="), speed);
         if (speed == 0 || cPos == 0 || timeMultiplier <= 0) {
             usbDebug(F("[FLOW][Motor::home] skipped: invalid speed, position, or time multiplier"));
-            pwmStop();
+            commandZeroVelocity();
             return;
         }
 
@@ -698,7 +738,7 @@ public:
 constexpr uint32_t FirmwareVersion = 1;
 constexpr char moduleName[] = "ServoMotor"; // ModuleName sent to Bpod in returnModuleInfo()
 ArCOM Serial1COM(Serial1); // NOLINT(*-interfaces-global-init)
-Motor motor(kDirectionPin, kPwmPin, kEnablePin);
+Motor motor(kDirectionPin, kEnablePin);
 byte opCode = 0; // Control opcode, or number of motor instructions to read.
 uint8_t motorInstructionByteBuffer[kMotorInstructionLength] = {};
 uint8_t motorInstructionBytesRead = 0;
@@ -1016,8 +1056,6 @@ void setup() {
     motor.begin();
     Serial1.begin(1312500); //specific baud rate for Bpod
     usbDebug(F("[FLOW][setup] Bpod Serial1 started"));
-    analogWriteResolution(16); //higher than default resolution for finer control,
-    analogWrite(kPwmPin, 0); // ensure pwm is off
     pinMode(kHostTransmitPin, OUTPUT);
     pinMode(kHostReceivePin, INPUT);
     pinMode(kClientTransmitPin, OUTPUT);
