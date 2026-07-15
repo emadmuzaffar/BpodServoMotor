@@ -49,8 +49,10 @@ constexpr double kMaxInstructionTime = 65535.0;
 constexpr float kConfigGainScale = 1000.0f;
 constexpr int kTimeMultiplier = 1;
 int timeMultiplier = kTimeMultiplier;
-constexpr int kTolerance = 300;
 constexpr int kEncoderPPR = 14400;
+constexpr int kTolerance = 300;
+constexpr int kDisableTolerance = kEncoderPPR / 2;
+constexpr uint32_t kToleranceTripDelayMs = 2000;
 constexpr float defaultKP = 0.1f;
 constexpr float defaultKD = 0.1f;
 constexpr bool kCorrectionEnabled = true;
@@ -59,8 +61,8 @@ constexpr uint32_t kUsbDebugStartupDelayMs = 500;
 constexpr int32_t kMaxRotation = kEncoderPPR * 2;
 constexpr uint32_t kFrequencyPwmChannel = PWM_CH7;
 constexpr uint32_t kWaveformClockHz = VARIANT_MCK; // Run the waveform generator directly from the 84 MHz master clock.
-constexpr uint32_t kMinFrequency = 400000;
-constexpr uint32_t kMaxFrequency = 600000;
+constexpr uint32_t kMinFrequency = 2000;
+constexpr uint32_t kMaxFrequency = 4000;
 constexpr uint32_t kFrequencyRange = kMaxFrequency - kMinFrequency;
 
 static_assert(kMinFrequency >= 20, "ClearPath MCPV frequency input must be at least 20 Hz");
@@ -138,6 +140,7 @@ class Safetynet {
 
     //Internal variables for safetynet to store data.
     int32_t tolerance = kTolerance;
+    int32_t disableTolerance = kDisableTolerance;
     int32_t encoderPPR = kEncoderPPR;
     int32_t maxRotation = kMaxRotation;
     const uint8_t enablePin;
@@ -146,6 +149,8 @@ class Safetynet {
     Instruction cInstruction;
     int32_t tickOffset = 0;
     bool eStopped = false;
+    bool toleranceTimerActive = false;
+    unsigned long toleranceExceededSinceMs = 0;
 
     /**
     *
@@ -223,7 +228,25 @@ class Safetynet {
     *
     * @author Emad Muzaffar
     */
-    bool checkTolerance() const {
+    bool checkTolerance() {
+        const double targetTicks = degreesToTicks(currentTargetDegrees());
+        const double error = absoluteValue(static_cast<double>(getTicks()) - targetTicks);
+        if (error < disableTolerance) {
+            toleranceTimerActive = false;
+            return false;
+        }
+
+        const unsigned long nowMs = millis();
+        if (!toleranceTimerActive) {
+            toleranceTimerActive = true;
+            toleranceExceededSinceMs = nowMs;
+            return false;
+        }
+
+        return nowMs - toleranceExceededSinceMs >= kToleranceTripDelayMs;
+    }
+
+    bool checkCorrective() const {
         const double targetTicks = degreesToTicks(currentTargetDegrees());
         const double error = absoluteValue(static_cast<double>(getTicks()) - targetTicks);
         return error >= tolerance;
@@ -243,8 +266,10 @@ class Safetynet {
     */
     void applyConfig(const Config &config) {
         tolerance = config.tolerance;
+        disableTolerance = config.encoderPPR / 2;
         encoderPPR = config.encoderPPR;
         maxRotation = config.maxRotation;
+        toleranceTimerActive = false;
     }
 
 public:
@@ -274,11 +299,11 @@ public:
         PIOB->PIO_PDR = PIO_PB27;   // D13
         PIOB->PIO_ABSR &= ~PIO_PB27;
 
-        // Enable quadrature decoder
+        // Count edges on both PHA and PHB for x4 quadrature decoding.
+        // TC_BMR_EDGPHA must remain clear; setting it counts PHA only (x2).
         TC0->TC_BMR =
             TC_BMR_QDEN |
-            TC_BMR_POSEN |
-            TC_BMR_EDGPHA;
+            TC_BMR_POSEN;
 
         TC0->TC_CHANNEL[0].TC_CMR = TC_CMR_TCCLKS_XC0;
 
@@ -357,7 +382,7 @@ public:
     * @author Emad Muzaffar
     */
     void disable() const {
-        // digitalWrite(this->enablePin, LOW);
+        digitalWrite(this->enablePin, LOW);
         usbDebugValue(F("[FLOW][Safetynet::disable] enable pin readback="), digitalRead(this->enablePin));
     }
 
@@ -367,8 +392,8 @@ public:
     */
     void eStop() {
         eStopped = true;
-        // disable();
-        // usbDebug(F("[FLOW][Safetynet::eStop] emergency-stop path entered"));
+        disable();
+        usbDebug(F("[FLOW][Safetynet::eStop] emergency-stop path entered"));
     }
 
     /**
@@ -376,19 +401,26 @@ public:
     * @author Emad Muzaffar
     */
     void update() {
+        static unsigned long lastDebugPrintMs = 0;
+        const unsigned long nowMs = millis();
 
-        // Serial.println(getTicks());
-        // Serial.println(getTargetTicks());
+        if (kUsbDebugEnabled && nowMs - lastDebugPrintMs >= 1000) {
+            lastDebugPrintMs = nowMs;
+            Serial.println(getTicks());
+            Serial.println(getTargetTicks());
+        }
 
         if (eStopped == true) {
             return;
         }
+
         if (checkPositionSafety()) {
-            // usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
-            // eStop();
+            usbDebug(F("[FLOW][Safetynet::update] eStop: position safety limit exceeded"));
+            eStop();
+            return;
         }
         if (checkTolerance()) {
-            // usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
+            // usbDebug(F("[FLOW][Safetynet::update] eStop: tracking tolerance exceeded for 2 seconds"));
             // eStop();
         }
 
@@ -461,7 +493,7 @@ class Motor {
             std::max(requestedFrequencyHz, kMinFrequency),
             kMaxFrequency);
         // Round to the nearest whole waveform period. At the configured endpoints,
-        // 84 MHz / 210 = 400 kHz and 84 MHz / 140 = 600 kHz exactly.
+        // 84 MHz / 42,000 = 2 kHz and 84 MHz / 21,000 = 4 kHz exactly.
         const auto period = static_cast<uint16_t>((kWaveformClockHz + frequencyHz / 2) / frequencyHz);
 
         PWMC_SetPeriod(PWM_INTERFACE, kFrequencyPwmChannel, period);
@@ -549,13 +581,24 @@ class Motor {
         lastError = error;
     }
 
+    void updateCorrection() {
+        if (safetynet.checkCorrective()) {
+            pid();
+            return;
+        }
+
+        writeFrequencyForRPM(0.0);
+        lastError = 0;
+        pidTime = 0;
+    }
+
     /**
     *
     * @author Emad Muzaffar
     */
     void correctionPID() {
         pidTarget = safetynet.getTargetTicks();
-        pid();
+        updateCorrection();
     }
 
     /**
@@ -617,6 +660,7 @@ public:
             case pCORRECTING:
                 if (!correctionEnabled) {
                     motorState = INACTIVE;
+                    safetynet.disable();
                     commandZeroVelocity();
                     usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] correction disabled; state -> INACTIVE"));
                     return false;
@@ -627,7 +671,7 @@ public:
                 return false;
 
             case CORRECTING:
-                pid();
+                updateCorrection();
                 return false;
 
             case pINSTRUCTED:
