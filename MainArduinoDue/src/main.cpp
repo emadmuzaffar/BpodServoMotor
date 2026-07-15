@@ -351,7 +351,7 @@ public:
     * @author Emad Muzaffar
     */
     void disable() const {
-        digitalWrite(this->enablePin, LOW);
+        // digitalWrite(this->enablePin, LOW);
         usbDebugValue(F("[FLOW][Safetynet::disable] enable pin readback="), digitalRead(this->enablePin));
     }
 
