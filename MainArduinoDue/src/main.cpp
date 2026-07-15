@@ -382,7 +382,7 @@ public:
             eStop();
         }
         if (checkTolerance()) {
-            usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
+            // usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
             // eStop();
         }
 
