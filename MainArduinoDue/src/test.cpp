@@ -13,6 +13,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 #include <ArCom/ArCOM.h>
 
@@ -24,18 +25,19 @@ constexpr uint8_t kHostTransmitPin = 52;
 constexpr uint8_t kHostReceivePin = 50;
 constexpr uint8_t kClientTransmitPin = 48;
 constexpr uint8_t kClientReceivePin = 46;
-constexpr float kMaxMotorRPM = 1000.0;
-float MaxMotorRPM = kMaxMotorRPM; // Must match the ClearPath MSP setup.
+constexpr float kMaxMotorRPM = 120; // Must match the ClearPath MSP setup.
+float MaxMotorRPM = kMaxMotorRPM;
 constexpr uint16_t kMaxPwm = 65535;
+constexpr double kPwmCalibration = 1.004; // Compensates for the measured 0.2-0.5% low PWM output.
 constexpr byte kModuleScanOpCode = 255;
 constexpr byte kDisableMotorOpCode = 249;
 constexpr byte kEnableMotorOpCode = 250;
+constexpr byte kMotorInstructionOpCode = 1;
 constexpr byte kMotorHomeOpCode = 200;
 constexpr byte kEncoderResetOpCode = 253;
 constexpr byte kConfigOpCode = 254;
 constexpr uint8_t kBytesPerUint16 = 2;
-constexpr uint8_t kMotorInstructionFieldCount = 3;
-constexpr uint8_t kMotorInstructionLength = kMotorInstructionFieldCount * kBytesPerUint16;
+constexpr uint8_t kMotorInstructionLength = 2 * kBytesPerUint16 + sizeof(uint8_t);
 constexpr uint8_t kMotorHomeInstructionLength = kBytesPerUint16;
 constexpr uint8_t kConfigFieldCount = 7;
 constexpr uint8_t kConfigLength = kConfigFieldCount * kBytesPerUint16;
@@ -54,6 +56,7 @@ constexpr float defaultKP = 0.1f;
 constexpr float defaultKD = 0.1f;
 constexpr bool kCorrectionEnabled = true;
 constexpr bool kUsbDebugEnabled = true; // Central switch for all USB debugging.
+constexpr uint32_t kUsbDebugStartupDelayMs = 500;
 
 /**
  * USB debugging. Messages start with [FLOW][caller] so they are easy to
@@ -61,14 +64,14 @@ constexpr bool kUsbDebugEnabled = true; // Central switch for all USB debugging.
  */
 void usbDebug(const __FlashStringHelper *message) {
     if (kUsbDebugEnabled) {
-        SerialUSB.println(message);
+        Serial.println(message);
     }
 }
 
 void usbDebugValue(const __FlashStringHelper *message, const uint32_t value) {
     if (kUsbDebugEnabled) {
-        SerialUSB.print(message);
-        SerialUSB.println(value);
+        Serial.print(message);
+        Serial.println(value);
     }
 }
 
@@ -80,14 +83,14 @@ void usbDebugValue(const __FlashStringHelper *message, const uint32_t value) {
 struct Instruction {
     uint16_t speed;
     uint16_t time;
-    uint16_t direction;
+    uint8_t direction;
     Instruction() : speed(0), time(0), direction(0) {}
-    Instruction(const uint16_t speed, const uint16_t time, const uint16_t direction)
+    Instruction(const uint16_t speed, const uint16_t time, const uint8_t direction)
         : speed(speed), time(time), direction(direction) {}
 };
 
 /**
-* 
+*
 * @author Emad Muzaffar
 */
 struct Config {
@@ -232,6 +235,12 @@ public:
     */
     explicit Safetynet(const uint8_t enablePin) : enablePin(enablePin) {}
 
+    void begin() const {
+        pinMode(enablePin, OUTPUT);
+        digitalWrite(enablePin, LOW);
+        usbDebugValue(F("[FLOW][Safetynet::begin] enable pin readback="), digitalRead(enablePin));
+    }
+
     /**
     *
     * @author Emad Muzaffar
@@ -320,21 +329,21 @@ public:
             // eStop();
             return;
         }
-        usbDebug(F("[FLOW][Safetynet::enable] motor enable pin -> HIGH"));
         digitalWrite(this->enablePin, HIGH);
+        usbDebugValue(F("[FLOW][Safetynet::enable] enable pin readback="), digitalRead(this->enablePin));
     }
 
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void disable() const {
-        usbDebug(F("[FLOW][Safetynet::disable] motor enable pin -> LOW"));
         digitalWrite(this->enablePin, LOW);
+        usbDebugValue(F("[FLOW][Safetynet::disable] enable pin readback="), digitalRead(this->enablePin));
     }
 
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void eStop() {
@@ -344,16 +353,16 @@ public:
     }
 
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void update() {
         if (checkPositionSafety()) {
-            usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
+            // usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: position safety limit exceeded"));
             // eStop();
         }
         if (checkTolerance()) {
-            usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
+            // usbDebug(F("[FLOW][Safetynet::update] eStop suppressed: tracking tolerance exceeded"));
             // eStop();
         }
 
@@ -362,7 +371,7 @@ public:
 
 
 class Motor {
-    
+
     //Enum for motor update FSM
     enum motorState{
         INACTIVE,
@@ -387,18 +396,18 @@ class Motor {
     float kP = defaultKP;
     float kD = defaultKD;
     bool correctionEnabled = kCorrectionEnabled;
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void setTimer(const uint16_t timerLength) {
         startTime = millis();
         durationMs = static_cast<uint32_t>(timerLength) * static_cast<uint32_t>(timeMultiplier);
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     bool timerComplete() {
@@ -409,9 +418,9 @@ class Motor {
         running = true;
         return false;
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     static float getVelocity(const uint16_t velocityDegPerSec) {
@@ -421,9 +430,9 @@ class Motor {
         const float targetRPM = static_cast<float>(velocityDegPerSec) / 6.0f;
         return std::min(std::max(targetRPM, 0.0f), MaxMotorRPM);
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void writePwmForRPM(const double rpm) const {
@@ -433,32 +442,34 @@ class Motor {
         }
 
         const double clampedRPM = std::min(std::max(rpm, 0.0), static_cast<double>(MaxMotorRPM));
-        const auto duty = static_cast<uint16_t>((clampedRPM / static_cast<double>(MaxMotorRPM)) * kMaxPwm);
+
+        const auto duty = static_cast<uint16_t>(std::lround(clampedRPM / static_cast<double>(MaxMotorRPM) * kMaxPwm));
+
         analogWrite(this->pwmPin, duty);
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void setPWM(const uint16_t velocityDegPerSec) const {
         writePwmForRPM(getVelocity(velocityDegPerSec));
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
-    void setDirection(const uint16_t direction) const {
+    void setDirection(const uint8_t direction) const {
         if (direction == 0) {
             digitalWrite(directionPin, HIGH);
         } else if (direction == 1) {
             digitalWrite(directionPin, LOW);
         }
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void pid() {
@@ -478,9 +489,9 @@ class Motor {
         pidTime = nowMicros;
         lastError = error;
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void correctionPID() {
@@ -489,7 +500,7 @@ class Motor {
     }
 
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void pwmStop() {
@@ -499,9 +510,9 @@ class Motor {
         lastError = 0;
         pidTime = 0;
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void internalRunInstruction(const Instruction &instruction) {
@@ -517,23 +528,25 @@ class Motor {
     }
 
 public:
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     Safetynet safetynet;
     explicit Motor(const uint8_t directionPin, const uint8_t pwmPin, const uint8_t enablePin)
-        : directionPin(directionPin), pwmPin(pwmPin), safetynet(enablePin) {
+        : directionPin(directionPin), pwmPin(pwmPin), safetynet(enablePin) {}
+
+    void begin() const {
         Safetynet::setupEncoder();
         pinMode(directionPin, OUTPUT);
         pinMode(pwmPin, OUTPUT);
-        pinMode(enablePin, OUTPUT);
-        usbDebug(F("[FLOW][Motor::Motor] constructor run"));
+        safetynet.begin();
+        usbDebug(F("[FLOW][Motor::begin] motor hardware initialized"));
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     bool checkStatusAndUpdate() {
@@ -589,9 +602,9 @@ public:
                 return false;
         }
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void setInstructions(const Instruction * const nInstructions, const size_t instructionCount) {
@@ -615,9 +628,9 @@ public:
             internalRunInstruction(instructions[cInstruction]);
         }
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void home(const uint16_t speed) {
@@ -642,9 +655,9 @@ public:
         }
         setInstructions(instruction, 1);
     }
-    
+
     /**
-    * 
+    *
     * @author Emad Muzaffar
     */
     void applyConfig(const Config &config) {
@@ -677,6 +690,7 @@ Config receivedConfig;
 uint32_t readingStartTime = 0;
 enum ReadState {
     OFF,
+    COUNT,
     ON,
     MACRO,
     CONFIG
@@ -686,6 +700,7 @@ uint8_t macroInstructionLength = 0;
 uint32_t hostTransmitTime = 0;
 uint32_t lastHostEchoTime = 0;
 uint8_t lastHostEchoState = LOW;
+bool hostTimeoutReported = false;
 
 /**
  * From SanWorks example
@@ -713,7 +728,7 @@ void returnModuleInfo() {
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void applyConfig(const Config &config) {
@@ -723,7 +738,7 @@ void applyConfig(const Config &config) {
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void startReadingMotorInstructions(const uint8_t instructionCount) {
@@ -742,8 +757,15 @@ void startReadingMotorInstructions(const uint8_t instructionCount) {
     }
 }
 
+void readMotorInstructionCountByte() {
+    if (!Serial1COM.available()) {
+        return;
+    }
+    startReadingMotorInstructions(Serial1COM.readByte());
+}
+
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void startReadingMacroInstructions(const uint8_t macroCode) {
@@ -760,7 +782,7 @@ void startReadingMacroInstructions(const uint8_t macroCode) {
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void startReadingConfig() {
@@ -771,7 +793,7 @@ void startReadingConfig() {
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 uint16_t uint16ValueAt(const uint8_t * const byteBuffer, const uint8_t valueIndex) {
@@ -781,7 +803,7 @@ uint16_t uint16ValueAt(const uint8_t * const byteBuffer, const uint8_t valueInde
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void finishMotorInstructions() {
@@ -802,7 +824,7 @@ void finishMotorInstructions() {
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void finishConfig() {
@@ -817,7 +839,7 @@ void finishConfig() {
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void readConfigByte() {
@@ -855,7 +877,7 @@ void readConfigByte() {
 
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void readMotorInstructionByte(const uint8_t motorInstructionLength = kMotorInstructionLength) {
@@ -868,12 +890,12 @@ void readMotorInstructionByte(const uint8_t motorInstructionLength = kMotorInstr
     if (motorInstructionBytesRead == motorInstructionLength) {
         const uint16_t speed = uint16ValueAt(motorInstructionByteBuffer, 0);
         uint16_t time = 0;
-        uint16_t direction = 0;
+        uint8_t direction = 0;
         if (motorInstructionLength >= 2 * kBytesPerUint16) {
             time = uint16ValueAt(motorInstructionByteBuffer, 1);
         }
-        if (motorInstructionLength >= 3 * kBytesPerUint16) {
-            direction = uint16ValueAt(motorInstructionByteBuffer, 2);
+        if (motorInstructionLength >= 2 * kBytesPerUint16 + sizeof(uint8_t)) {
+            direction = motorInstructionByteBuffer[2 * kBytesPerUint16];
         }
         receivedInstructions.emplace_back(speed, time, direction);
         Serial1COM.writeByte(2);
@@ -887,7 +909,7 @@ void readMotorInstructionByte(const uint8_t motorInstructionLength = kMotorInstr
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void hostTransmit() {
@@ -901,7 +923,7 @@ void hostTransmit() {
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void hostUpdate() {
@@ -910,6 +932,7 @@ void hostUpdate() {
     if (millis() <= kHostStartTolerance) {
         lastHostEchoState = digitalRead(kHostReceivePin);
         lastHostEchoTime = nowMicros;
+        hostTimeoutReported = false;
         return;
     }
 
@@ -919,17 +942,19 @@ void hostUpdate() {
     if (echoState != lastHostEchoState) {
         lastHostEchoState = echoState;
         lastHostEchoTime = nowMicros;
+        hostTimeoutReported = false;
         return;
     }
 
-    if (nowMicros - lastHostEchoTime > kCrossCheckMaxNoResponseTime) {
+    if (nowMicros - lastHostEchoTime > kCrossCheckMaxNoResponseTime && !hostTimeoutReported) {
+        hostTimeoutReported = true;
         usbDebug(F("[FLOW][hostUpdate] eStop suppressed: host echo timed out"));
         // motor.safetynet.eStop(); //TODO: ESTOPPED HERE
     }
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void clientUpdate() {
@@ -937,7 +962,7 @@ void clientUpdate() {
 }
 
 /**
- *  
+ *
  * @author Emad Muzaffar
 */
 void crossCheckUpdate() {
@@ -953,9 +978,14 @@ void crossCheckUpdate() {
 */
 void setup() {
     if (kUsbDebugEnabled) {
-        SerialUSB.begin(115200);
+        Serial.begin(115200);
+        delay(kUsbDebugStartupDelayMs);
+        Serial.println();
+        Serial.println(F("[RESET] ServoMotor firmware starting"));
+        Serial.flush();
     }
     usbDebug(F("[FLOW][setup] USB debugging started"));
+    motor.begin();
     Serial1.begin(1312500); //specific baud rate for Bpod
     usbDebug(F("[FLOW][setup] Bpod Serial1 started"));
     analogWriteResolution(16); //higher than default resolution for finer control,
@@ -976,7 +1006,9 @@ void setup() {
  * @author Emad Muzaffar
 */
 void loop() {
-    if (readState == ON) {
+    if (readState == COUNT) {
+        readMotorInstructionCountByte();
+    } else if (readState == ON) {
         readMotorInstructionByte();
     } else if (readState == MACRO) {
         readMotorInstructionByte(macroInstructionLength);
@@ -997,6 +1029,10 @@ void loop() {
             //Turn enable on
             usbDebug(F("[FLOW][loop] route -> Safetynet::enable"));
             motor.safetynet.enable();
+        } else if (opCode == kMotorInstructionOpCode) {
+            usbDebug(F("[FLOW][loop] route -> read instruction count"));
+            readState = COUNT;
+            readMotorInstructionCountByte();
         } else if (opCode == kMotorHomeOpCode) {
             usbDebug(F("[FLOW][loop] route -> startReadingMacroInstructions"));
             startReadingMacroInstructions(opCode);
