@@ -1,8 +1,9 @@
-# Bpod Rotary Encoder v1 - breadboard Nano ESP32
+# Bpod speed-triggered rotary encoder - breadboard Nano ESP32
 
-This is a breadboard-oriented port of the official Sanworks Rotary Encoder
-Module v1 firmware to an **Arduino Nano ESP32**. It is kept in a separate
-PlatformIO environment so it cannot be linked into either existing controller.
+This firmware turns a breadboard-mounted **Arduino Nano ESP32** into a Bpod
+module that reports when the encoder's average speed exceeds a configured
+threshold. It is kept in a separate PlatformIO environment so it cannot be
+linked into either existing controller.
 
 ## Build and upload
 
@@ -19,12 +20,9 @@ PlatformIO environment so it cannot be linked into either existing controller.
 | D1 / TX | Bpod UART transmit | UART RX of the full-duplex RS-485 converter |
 | D2 | Encoder channel A | Encoder A/open-collector output |
 | D3 | Encoder channel B | Encoder B/open-collector output |
-| D4 | Encoder index Z | Reserved; currently not used by the v1 protocol |
-| D5 / RX2 | Output-stream receive | Optional second module UART TX |
-| D6 / TX2 | Output-stream transmit | Optional second module UART RX |
 | GND | Common reference | Encoder and converter ground |
 
-The Nano ESP32 is a **3.3 V device**. Do not drive D0-D6 with 5 V logic.
+The Nano ESP32 is a **3.3 V device**. Do not drive D0-D3 with 5 V logic.
 The firmware enables the Nano's 3.3 V pull-ups on the encoder inputs; external
 pull-ups to 3.3 V are preferable for long/noisy encoder wiring.
 
@@ -32,23 +30,50 @@ The Bpod module port is RS-485, not TTL UART. Keep the same full-duplex
 RS-485-to-UART converter between Bpod and the Nano that is used for the Due.
 The serial link is configured for the Bpod module rate of 1,312,500 baud.
 
-## Compatibility and intentional differences
+## Bpod command
 
-Preserved from Rotary Encoder Module v1:
+Send one 9-byte message. Multi-byte values are unsigned and little-endian.
 
-- Bpod module discovery (opcode 255, module name `RotaryEncoder`)
-- X1 quadrature position counting and bipolar/unipolar wrapping
-- eight position thresholds and threshold event bytes 1-8
-- USB control, position/time streaming, and event markers
-- optional second-UART position stream
+| Byte(s) | Type | Meaning |
+|---|---|---|
+| 1 | `uint8` | Opcode `1` |
+| 2-5 | `uint32` | Required speed in encoder ticks/second |
+| 6-9 | `uint32` | Integration window in milliseconds |
 
-Not present on the breadboard build:
+The decoder counts every valid A/B quadrature transition. If an encoder is
+rated in full A/B cycles per revolution, this normally produces four encoder
+ticks per cycle.
 
-- microSD logging (`L` and `F` are no-ops; `R` returns zero samples)
-- the Teensy 3.5 circuit-revision sensing pins
-- v2-only advanced time thresholds and DAC output
+For each integration window, the firmware calculates:
 
-The interrupt writes encoder changes into a 256-sample ring buffer. The main
-loop performs serial writes and threshold checks, keeping those slower actions
-out of the encoder interrupt. If the loop cannot drain that buffer, new samples
-are dropped rather than corrupting memory.
+```text
+absolute tick change
+-------------------- x 1000 = average ticks/second
+ elapsed time (ms)
+```
+
+The windows are consecutive and do not overlap. When the average speed is
+strictly greater than the requested speed, the module sends behavior event byte
+`1` (`SpeedAchieved`) to Bpod. The trigger remains active, so every integration
+window above the threshold sends another event. Send another opcode `1` packet
+only when changing the speed or integration time. An integration time of `0`
+is invalid and stops speed measurements until a valid configuration is sent.
+
+Example MATLAB packet construction:
+
+```matlab
+requiredSpeedTicksPerSecond = uint32(5000);
+integrationTimeMs = uint32(100);
+
+speedBytes = typecast(requiredSpeedTicksPerSecond, 'uint8');
+timeBytes = typecast(integrationTimeMs, 'uint8');
+
+command = [
+    uint8(1), ...
+    speedBytes, ...
+    timeBytes
+];
+```
+
+Opcode `255` returns module name `RotaryEncoder` and advertises the single
+behavior event `SpeedAchieved` during Bpod module discovery.
