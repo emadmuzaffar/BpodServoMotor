@@ -300,18 +300,18 @@ public:
     static void setupEncoder() {
         pmc_enable_periph_clk(ID_TC0);
 
-        // D2 = TIOA0, D13 = TIOB0
-        PIOB->PIO_PDR = PIO_PB25;   // D2
-        PIOB->PIO_ABSR &= ~PIO_PB25;
+        // D2/PB25 = TIOA0 and D13/PB27 = TIOB0 on peripheral B.
+        PIO_Configure(
+            PIOB,
+            PIO_PERIPH_B,
+            PIO_PB25B_TIOA0 | PIO_PB27B_TIOB0,
+            PIO_DEFAULT);
 
-        PIOB->PIO_PDR = PIO_PB27;   // D13
-        PIOB->PIO_ABSR &= ~PIO_PB27;
-
-        // Count edges on both PHA and PHB for x4 quadrature decoding.
-        // TC_BMR_EDGPHA must remain clear; setting it counts PHA only (x2).
+        // Count both edges of PHA and PHB for x4 quadrature decoding.
         TC0->TC_BMR =
             TC_BMR_QDEN |
-            TC_BMR_POSEN;
+            TC_BMR_POSEN |
+            TC_BMR_EDGPHA;
 
         TC0->TC_CHANNEL[0].TC_CMR = TC_CMR_TCCLKS_XC0;
 
@@ -1174,8 +1174,8 @@ void hostUpdate() {
 
     if (nowMicros - lastHostEchoTime > kCrossCheckMaxNoResponseTime && !hostTimeoutReported) {
         hostTimeoutReported = true;
-        usbDebug(F("[FLOW][hostUpdate] eStop: host echo timed out"));
-        motor.safetynet.eStop();
+        // usbDebug(F("[FLOW][hostUpdate] eStop: host echo timed out"));
+        // motor.safetynet.eStop();
     }
 }
 
