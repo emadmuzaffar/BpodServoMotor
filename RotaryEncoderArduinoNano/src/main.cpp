@@ -52,7 +52,7 @@ void IRAM_ATTR encoderISR() {
         (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1U) |
         static_cast<uint8_t>(digitalRead(kEncoderBPin));
 
-    const uint8_t transition =
+    const auto transition =
         static_cast<uint8_t>((previousEncoderState << 2U) | currentState);
 
     switch (transition) {
