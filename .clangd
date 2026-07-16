@@ -1,0 +1,13 @@
+CompileFlags:
+  CompilationDatabase: .
+  Add:
+    - --target=xtensa-esp32s3-elf
+    - -isystem../../.platformio/packages/toolchain-xtensa-esp32s3/xtensa-esp32s3-elf/include/c++/8.4.0
+    - -isystem../../.platformio/packages/toolchain-xtensa-esp32s3/xtensa-esp32s3-elf/include/c++/8.4.0/xtensa-esp32s3-elf
+    - -isystem../../.platformio/packages/toolchain-xtensa-esp32s3/xtensa-esp32s3-elf/include/c++/8.4.0/backward
+    - -isystem../../.platformio/packages/toolchain-xtensa-esp32s3/lib/gcc/xtensa-esp32s3-elf/8.4.0/include-fixed
+    - -isystem../../.platformio/packages/toolchain-xtensa-esp32s3/xtensa-esp32s3-elf/include
+  Remove:
+    - -mlongcalls
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
