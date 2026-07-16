@@ -12,7 +12,7 @@ constexpr uint8_t kClientTransmitPin = 6;
 constexpr uint8_t kClientReceivePin = 5;
 
 // Timing setup
-constexpr uint32_t kHostStartTolerance = 300;        // milliseconds before safety check starts
+constexpr uint32_t kHostStartTolerance = 1000;       // milliseconds before safety check starts
 constexpr uint32_t kCrossCheckMaxNoResponseTime = 5000; // microseconds before e-stop
 constexpr uint32_t kCrossCheckDutyTime = 500;        // microseconds between host toggles
 
@@ -25,7 +25,7 @@ uint8_t lastHostEchoState = LOW;
 bool eStopBool = false;
 
 void eStop() {
-    // digitalWrite(kEnablePin, LOW);
+    digitalWrite(kEnablePin, LOW);
     eStopBool = true;
     Serial.println("eStop");
 }
@@ -65,6 +65,7 @@ void hostUpdate() {
     if (echoState != lastHostEchoState) {
         lastHostEchoState = echoState;
         lastHostEchoTime = nowMicros;
+        digitalWrite(kEnablePin, HIGH);
         return;
     }
 
@@ -95,13 +96,13 @@ void setup() {
     Serial.begin(115200);
 
     pinMode (kEnablePin, OUTPUT);
-    digitalWrite(kEnablePin, HIGH);
+    digitalWrite(kEnablePin, LOW);
 
     pinMode(kHostTransmitPin, OUTPUT);
-    pinMode(kHostReceivePin, INPUT);
+    pinMode(kHostReceivePin, INPUT_PULLUP);
 
     pinMode(kClientTransmitPin, OUTPUT);
-    pinMode(kClientReceivePin, INPUT);
+    pinMode(kClientReceivePin, INPUT_PULLUP);
 
     digitalWrite(kHostTransmitPin, LOW);
     digitalWrite(kClientTransmitPin, LOW);

@@ -34,14 +34,19 @@ constexpr byte kMotorInstructionOpCode = 1;
 constexpr byte kMotorHomeOpCode = 200;
 constexpr byte kEncoderResetOpCode = 253;
 constexpr byte kConfigOpCode = 254;
+constexpr byte kDoneEvent = 1;
+constexpr byte kReceivedEvent = 2;
+constexpr byte kCorrectionDoneEvent = 3;
 constexpr uint8_t kBytesPerUint16 = 2;
 constexpr uint8_t kMotorInstructionLength = 2 * kBytesPerUint16 + sizeof(uint8_t);
 constexpr uint8_t kMotorHomeInstructionLength = kBytesPerUint16;
-constexpr uint8_t kConfigFieldCount = 8;
+constexpr uint8_t kConfigFieldCount = 9;
 constexpr uint8_t kConfigLength = kConfigFieldCount * kBytesPerUint16;
-constexpr uint32_t kHostStartTolerance = 300;
+constexpr uint32_t kHostStartTolerance = 1000;
 constexpr uint32_t kCrossCheckMaxNoResponseTime = 5000;
 constexpr uint32_t kCrossCheckDutyTime = 500;
+constexpr uint32_t kSerialPacketTimeoutMs = 1000;
+constexpr uint8_t kMaxMotorInstructions = 199;
 constexpr double kDegreesPerRotation = 360.0;
 constexpr double kMillisPerSecond = 1000.0;
 constexpr double kMicrosPerSecond = 1000000.0;
@@ -56,6 +61,7 @@ constexpr uint32_t kToleranceTripDelayMs = 2000;
 constexpr float defaultKP = 0.1f;
 constexpr float defaultKD = 0.1f;
 constexpr bool kCorrectionEnabled = true;
+constexpr uint32_t kCorrectionStartDelayMs = 0;
 constexpr bool kUsbDebugEnabled = true; // Central switch for all USB debugging.
 constexpr uint32_t kUsbDebugStartupDelayMs = 500;
 constexpr int32_t kMaxRotation = kEncoderPPR * 2;
@@ -119,8 +125,9 @@ struct Config {
     float kP;
     float kD;
     bool correctionEnabled;
-    Config() : maxMotorRPM(kMaxMotorRPM), timeMultiplier(kTimeMultiplier), tolerance(kTolerance), encoderPPR(kEncoderPPR), maxRotation(kMaxRotation), kP(defaultKP), kD(defaultKD), correctionEnabled(kCorrectionEnabled) {}
-    Config(const float maxMotorRPM, const int timeMultiplier, const int tolerance, const int encoderPPR, const int maxRotation, const float kP, const float kD, const bool correctionEnabled)
+    uint32_t correctionStartDelayMs;
+    Config() : maxMotorRPM(kMaxMotorRPM), timeMultiplier(kTimeMultiplier), tolerance(kTolerance), encoderPPR(kEncoderPPR), maxRotation(kMaxRotation), kP(defaultKP), kD(defaultKD), correctionEnabled(kCorrectionEnabled), correctionStartDelayMs(kCorrectionStartDelayMs) {}
+    Config(const float maxMotorRPM, const int timeMultiplier, const int tolerance, const int encoderPPR, const int maxRotation, const float kP, const float kD, const bool correctionEnabled, const uint16_t correctionStartDelayMs)
         : maxMotorRPM(maxMotorRPM),
             timeMultiplier(timeMultiplier),
             tolerance(tolerance),
@@ -128,7 +135,8 @@ struct Config {
             maxRotation(rotationLimitTicks(maxRotation, encoderPPR)),
             kP(kP),
             kD(kD),
-            correctionEnabled(correctionEnabled) {}
+            correctionEnabled(correctionEnabled),
+            correctionStartDelayMs(correctionStartDelayMs) {}
 };
 
 /**
@@ -336,6 +344,14 @@ public:
         tickOffset = getRawTicks();
     }
 
+    void resetPositionReference() {
+        setTickOffset();
+        tPosition = 0.0;
+        cInstruction = Instruction();
+        startTime = micros();
+        toleranceTimerActive = false;
+    }
+
     /**
     *
     * @author Emad Muzaffar
@@ -406,8 +422,18 @@ public:
 
         if (kUsbDebugEnabled && nowMs - lastDebugPrintMs >= 1000) {
             lastDebugPrintMs = nowMs;
-            Serial.println(getTicks());
-            Serial.println(getTargetTicks());
+            const int32_t measuredTicks = getTicks();
+            const double targetTicks = degreesToTicks(currentTargetDegrees());
+            Serial.print(F("[FLOW][Safetynet::telemetry] measuredTicks="));
+            Serial.print(measuredTicks);
+            Serial.print(F(" targetTicks="));
+            Serial.print(targetTicks);
+            Serial.print(F(" errorTicks="));
+            Serial.print(static_cast<double>(measuredTicks) - targetTicks);
+            Serial.print(F(" enable="));
+            Serial.print(digitalRead(enablePin));
+            Serial.print(F(" eStopped="));
+            Serial.println(eStopped);
         }
 
         if (eStopped == true) {
@@ -420,8 +446,8 @@ public:
             return;
         }
         if (checkTolerance()) {
-            // usbDebug(F("[FLOW][Safetynet::update] eStop: tracking tolerance exceeded for 2 seconds"));
-            // eStop();
+            usbDebug(F("[FLOW][Safetynet::update] eStop: tracking tolerance exceeded for 2 seconds"));
+            eStop();
         }
 
     }
@@ -453,6 +479,8 @@ class Motor {
     float kP = defaultKP;
     float kD = defaultKD;
     bool correctionEnabled = kCorrectionEnabled;
+    uint32_t correctionStartDelayMs = kCorrectionStartDelayMs;
+    uint32_t correctionDelayStartedAtMs = 0;
 
     /**
     *
@@ -565,10 +593,15 @@ class Motor {
     */
     void pid() {
         const auto nowMicros = static_cast<double>(micros());
-        const double error = static_cast<double>(safetynet.getTicks()) - pidTarget;
-        const double dt = nowMicros - pidTime;
+        const double rawError = static_cast<double>(safetynet.getTicks()) - pidTarget;
+        const double error = rawError > safetynet.tolerance
+            ? rawError - safetynet.tolerance
+            : (rawError < -safetynet.tolerance ? rawError + safetynet.tolerance : 0.0);
+        const double dtSeconds = (nowMicros - pidTime) / kMicrosPerSecond;
         const double p = error;
-        const double d = pidTime > 0.0 && dt > 0.0 ? (error - lastError) / dt : 0.0;
+        const double d = pidTime > 0.0 && dtSeconds > 0.0
+            ? (error - lastError) / dtSeconds
+            : 0.0;
         const double targetRPM = p * kP + d * kD;
 
         if (targetRPM > 0.0) {
@@ -581,24 +614,25 @@ class Motor {
         lastError = error;
     }
 
-    void updateCorrection() {
+    bool updateCorrection() {
         if (safetynet.checkCorrective()) {
             pid();
-            return;
+            return false;
         }
 
         writeFrequencyForRPM(0.0);
         lastError = 0;
         pidTime = 0;
+        return true;
     }
 
     /**
     *
     * @author Emad Muzaffar
     */
-    void correctionPID() {
+    bool correctionPID() {
         pidTarget = safetynet.getTargetTicks();
-        updateCorrection();
+        return updateCorrection();
     }
 
     /**
@@ -642,8 +676,8 @@ public:
     void begin() const {
         Safetynet::setupEncoder();
         pinMode(directionPin, OUTPUT);
-        setupFrequencyOutput();
         safetynet.begin();
+        setupFrequencyOutput();
         usbDebug(F("[FLOW][Motor::begin] motor hardware initialized"));
     }
 
@@ -651,28 +685,49 @@ public:
     *
     * @author Emad Muzaffar
     */
-    bool checkStatusAndUpdate() {
+    uint8_t checkStatusAndUpdate() {
         safetynet.update();
+        if (safetynet.eStopped) {
+            if (motorState != INACTIVE || running) {
+                instructions.clear();
+                motorState = INACTIVE;
+                commandZeroVelocity();
+                usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] emergency stop aborted active motion"));
+            }
+            return 0;
+        }
+
         switch (motorState) {
             case INACTIVE:
-                return false;
+                return 0;
 
             case pCORRECTING:
                 if (!correctionEnabled) {
                     motorState = INACTIVE;
                     safetynet.disable();
                     commandZeroVelocity();
-                    usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] correction disabled; state -> INACTIVE"));
-                    return false;
+                    usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] correction disabled; sequence complete; state -> INACTIVE"));
+                    return kCorrectionDoneEvent;
                 }
-                correctionPID();
+                if (millis() - correctionDelayStartedAtMs < correctionStartDelayMs) {
+                    return 0;
+                }
+                if (correctionPID()) {
+                    motorState = INACTIVE;
+                    usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] correction already within tolerance; state -> INACTIVE"));
+                    return kCorrectionDoneEvent;
+                }
                 motorState = CORRECTING;
                 usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] state -> CORRECTING"));
-                return false;
+                return 0;
 
             case CORRECTING:
-                updateCorrection();
-                return false;
+                if (updateCorrection()) {
+                    motorState = INACTIVE;
+                    usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] correction complete; state -> INACTIVE"));
+                    return kCorrectionDoneEvent;
+                }
+                return 0;
 
             case pINSTRUCTED:
                 if (instructions.empty()) {
@@ -682,7 +737,7 @@ public:
                     motorState = INSTRUCTED;
                     usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] state -> INSTRUCTED"));
                 }
-                return false;
+                return 0;
 
             case INSTRUCTED:
                 if (timerComplete()) {
@@ -692,18 +747,20 @@ public:
                         internalRunInstruction(instructions[cInstruction]);
                     } else {
                         instructions.clear();
+                        commandZeroVelocity();
+                        correctionDelayStartedAtMs = millis();
                         motorState = pCORRECTING;
-                        usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] sequence complete; state -> pCORRECTING"));
-                        return true;
+                        usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] timed sequence complete; Done sent; correction delay started"));
+                        return kDoneEvent;
                     }
                 }
-                return false;
+                return 0;
 
             default:
                 // Safety fallback
                 motorState = CORRECTING;
                 usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] invalid state; fallback -> CORRECTING"));
-                return false;
+                return 0;
         }
     }
 
@@ -751,7 +808,9 @@ public:
         const double timeUnits = timeSeconds * kMillisPerSecond / static_cast<double>(timeMultiplier);
         Instruction instruction[1];
         instruction[0].speed = speed;
-        instruction[0].time = static_cast<uint16_t>(std::min(timeUnits + 0.999, kMaxInstructionTime));
+        instruction[0].time = static_cast<uint16_t>(std::min(
+            std::max(std::ceil(timeUnits), 1.0),
+            kMaxInstructionTime));
         if (cPos >= 0) {
             instruction[0].direction = 1;
         } else {
@@ -769,7 +828,17 @@ public:
         kP = config.kP;
         kD = config.kD;
         correctionEnabled = config.correctionEnabled;
+        correctionStartDelayMs = config.correctionStartDelayMs;
         safetynet.applyConfig(config);
+    }
+
+    void resetPositionReference() {
+        instructions.clear();
+        motorState = INACTIVE;
+        commandZeroVelocity();
+        safetynet.disable();
+        safetynet.resetPositionReference();
+        usbDebug(F("[FLOW][Motor::resetPositionReference] motion stopped and measured/target position reset"));
     }
 
 };
@@ -806,6 +875,30 @@ uint32_t lastHostEchoTime = 0;
 uint8_t lastHostEchoState = LOW;
 bool hostTimeoutReported = false;
 
+void resetSerialReadState() {
+    std::fill_n(motorInstructionByteBuffer, kMotorInstructionLength, 0);
+    std::fill_n(configByteBuffer, kConfigLength, 0);
+    motorInstructionBytesRead = 0;
+    motorInstructionsExpected = 0;
+    configBytesRead = 0;
+    macroInstructionLength = 0;
+    receivedInstructions.clear();
+    receivedConfig = Config();
+    readState = OFF;
+    readingStartTime = 0;
+}
+
+void markSerialReadProgress() {
+    readingStartTime = millis();
+}
+
+void recoverTimedOutSerialPacket() {
+    if (readState != OFF && millis() - readingStartTime >= kSerialPacketTimeoutMs) {
+        usbDebug(F("[FLOW][recoverTimedOutSerialPacket] incomplete packet discarded; read state -> OFF"));
+        resetSerialReadState();
+    }
+}
+
 /**
  * From SanWorks example
  * Writes info about Arduino system over serial to Bpod
@@ -820,13 +913,16 @@ void returnModuleInfo() {
     Serial1COM.writeCharArray(moduleName, sizeof(moduleName) - 1); // Module name
     Serial1COM.writeByte(1);                      // More info follows
     Serial1COM.writeByte('#');                    // Behavior event record
-    Serial1COM.writeByte(2);                      // Number of events
+    Serial1COM.writeByte(3);                      // Number of events
     constexpr char eventName1[] = "Done";
     Serial1COM.writeByte(sizeof(eventName1) - 1);    // Length
     Serial1COM.writeCharArray(eventName1, sizeof(eventName1) - 1);
     constexpr char eventName2[] = "Received";
     Serial1COM.writeByte(sizeof(eventName2) - 1);    // Length
     Serial1COM.writeCharArray(eventName2, sizeof(eventName2) - 1);
+    constexpr char eventName3[] = "CorrectionDone";
+    Serial1COM.writeByte(sizeof(eventName3) - 1);    // Length
+    Serial1COM.writeCharArray(eventName3, sizeof(eventName3) - 1);
     Serial1COM.writeByte(0);
     usbDebug(F("[FLOW][returnModuleInfo] response complete"));
 }
@@ -847,10 +943,17 @@ void applyConfig(const Config &config) {
 */
 void startReadingMotorInstructions(const uint8_t instructionCount) {
     usbDebugValue(F("[FLOW][startReadingMotorInstructions] read state -> ON; instruction count="), instructionCount);
+    if (instructionCount > kMaxMotorInstructions) {
+        usbDebug(F("[FLOW][startReadingMotorInstructions] rejected: instruction count exceeds protocol maximum"));
+        resetSerialReadState();
+        return;
+    }
+
     motorInstructionBytesRead = 0;
     motorInstructionsExpected = instructionCount;
     receivedInstructions.clear();
     receivedInstructions.reserve(motorInstructionsExpected);
+    markSerialReadProgress();
 
     if (motorInstructionsExpected == 0) {
         usbDebug(F("[FLOW][startReadingMotorInstructions] zero instructions; read state -> OFF"));
@@ -865,6 +968,7 @@ void readMotorInstructionCountByte() {
     if (!Serial1COM.available()) {
         return;
     }
+    markSerialReadProgress();
     startReadingMotorInstructions(Serial1COM.readByte());
 }
 
@@ -882,6 +986,7 @@ void startReadingMacroInstructions(const uint8_t macroCode) {
         motorInstructionsExpected = 1;
         receivedInstructions.clear();
         receivedInstructions.reserve(1);
+        markSerialReadProgress();
     }
 }
 
@@ -894,6 +999,7 @@ void startReadingConfig() {
     usbDebug(F("[FLOW][startReadingConfig] read state -> CONFIG"));
     configBytesRead = 0;
     receivedConfig = Config();
+    markSerialReadProgress();
 }
 
 /**
@@ -918,12 +1024,7 @@ void finishMotorInstructions() {
         usbDebug(F("[FLOW][finishMotorInstructions] home packet complete; sending to motor"));
         motor.home(receivedInstructions.front().speed);
     }
-    //reset system
-    std::fill_n(motorInstructionByteBuffer, kMotorInstructionLength, 0);
-    motorInstructionBytesRead = 0;
-    motorInstructionsExpected = 0;
-    macroInstructionLength = 0;
-    readState = OFF;
+    resetSerialReadState();
     usbDebug(F("[FLOW][finishMotorInstructions] read state -> OFF"));
 }
 
@@ -934,11 +1035,7 @@ void finishMotorInstructions() {
 void finishConfig() {
     usbDebug(F("[FLOW][finishConfig] configuration packet complete"));
     applyConfig(receivedConfig);
-    //reset system
-    receivedConfig = Config();
-    std::fill_n(configByteBuffer, kConfigLength, 0);
-    configBytesRead = 0;
-    readState = OFF;
+    resetSerialReadState();
     usbDebug(F("[FLOW][finishConfig] read state -> OFF"));
 }
 
@@ -952,13 +1049,14 @@ void readConfigByte() {
     }
     configByteBuffer[configBytesRead] = Serial1COM.readByte();
     configBytesRead++;
+    markSerialReadProgress();
     usbDebugValue(F("[FLOW][readConfigByte] bytes received="), configBytesRead);
 
     // MATLAB sends one uint16 field per config state, so acknowledge only
-    // after both bytes arrive. This keeps its eight states aligned with the
-    // firmware's eight config fields.
+    // after both bytes arrive. This keeps its nine states aligned with the
+    // firmware's nine config fields.
     if (configBytesRead % kBytesPerUint16 == 0) {
-        Serial1COM.writeByte(2);
+        Serial1COM.writeByte(kReceivedEvent);
     }
 
     if (configBytesRead == kConfigLength) {
@@ -970,6 +1068,14 @@ void readConfigByte() {
         const float kP = static_cast<float>(uint16ValueAt(configByteBuffer, 5)) / kConfigGainScale;
         const float kD = static_cast<float>(uint16ValueAt(configByteBuffer, 6)) / kConfigGainScale;
         const uint16_t correctiveInt = uint16ValueAt(configByteBuffer, 7);
+        const uint16_t correctionStartDelayMs = uint16ValueAt(configByteBuffer, 8);
+        if (maxMotorRPM == 0 || configuredTimeMultiplier == 0 || encoderPPR == 0 ||
+            maxRotation == 0 || correctiveInt > 1) {
+            usbDebug(F("[FLOW][readConfigByte] rejected invalid configuration; emergency stop latched"));
+            motor.safetynet.eStop();
+            resetSerialReadState();
+            return;
+        }
         bool correctionEnabled = true;
         if (correctiveInt == 0) {
             correctionEnabled = false;
@@ -982,7 +1088,8 @@ void readConfigByte() {
             maxRotation,
             kP,
             kD,
-            correctionEnabled);
+            correctionEnabled,
+            correctionStartDelayMs);
         finishConfig();
     }
 }
@@ -998,6 +1105,7 @@ void readMotorInstructionByte(const uint8_t motorInstructionLength = kMotorInstr
     }
     motorInstructionByteBuffer[motorInstructionBytesRead] = Serial1COM.readByte();
     motorInstructionBytesRead++;
+    markSerialReadProgress();
 
     if (motorInstructionBytesRead == motorInstructionLength) {
         const uint16_t speed = uint16ValueAt(motorInstructionByteBuffer, 0);
@@ -1009,8 +1117,14 @@ void readMotorInstructionByte(const uint8_t motorInstructionLength = kMotorInstr
         if (motorInstructionLength >= 2 * kBytesPerUint16 + sizeof(uint8_t)) {
             direction = motorInstructionByteBuffer[2 * kBytesPerUint16];
         }
+        if (direction > 1) {
+            usbDebug(F("[FLOW][readMotorInstructionByte] rejected: direction must be 0 or 1"));
+            motor.safetynet.eStop();
+            resetSerialReadState();
+            return;
+        }
         receivedInstructions.emplace_back(speed, time, direction);
-        Serial1COM.writeByte(2);
+        Serial1COM.writeByte(kReceivedEvent);
         usbDebugValue(F("[FLOW][readMotorInstructionByte] complete instructions received="), receivedInstructions.size());
         motorInstructionBytesRead = 0;
 
@@ -1060,8 +1174,8 @@ void hostUpdate() {
 
     if (nowMicros - lastHostEchoTime > kCrossCheckMaxNoResponseTime && !hostTimeoutReported) {
         hostTimeoutReported = true;
-        usbDebug(F("[FLOW][hostUpdate] eStop suppressed: host echo timed out"));
-        // motor.safetynet.eStop(); //TODO: ESTOPPED HERE
+        usbDebug(F("[FLOW][hostUpdate] eStop: host echo timed out"));
+        motor.safetynet.eStop();
     }
 }
 
@@ -1101,9 +1215,9 @@ void setup() {
     Serial1.begin(1312500); //specific baud rate for Bpod
     usbDebug(F("[FLOW][setup] Bpod Serial1 started"));
     pinMode(kHostTransmitPin, OUTPUT);
-    pinMode(kHostReceivePin, INPUT);
+    pinMode(kHostReceivePin, INPUT_PULLUP);
     pinMode(kClientTransmitPin, OUTPUT);
-    pinMode(kClientReceivePin, INPUT);
+    pinMode(kClientReceivePin, INPUT_PULLUP);
     digitalWrite(kHostTransmitPin, LOW);
     digitalWrite(kClientTransmitPin, LOW);
     lastHostEchoState = digitalRead(kHostReceivePin);
@@ -1116,6 +1230,8 @@ void setup() {
  * @author Emad Muzaffar
 */
 void loop() {
+    recoverTimedOutSerialPacket();
+
     if (readState == COUNT) {
         readMotorInstructionCountByte();
     } else if (readState == ON) {
@@ -1130,7 +1246,7 @@ void loop() {
         if (opCode == kModuleScanOpCode) {
             usbDebug(F("[FLOW][loop] route -> returnModuleInfo"));
             returnModuleInfo();
-            motor.safetynet.setTickOffset();
+            motor.resetPositionReference();
         } else if (opCode == kDisableMotorOpCode) {
             //Turn enable off
             usbDebug(F("[FLOW][loop] route -> Safetynet::disable"));
@@ -1142,26 +1258,25 @@ void loop() {
         } else if (opCode == kMotorInstructionOpCode) {
             usbDebug(F("[FLOW][loop] route -> read instruction count"));
             readState = COUNT;
+            markSerialReadProgress();
             readMotorInstructionCountByte();
         } else if (opCode == kMotorHomeOpCode) {
             usbDebug(F("[FLOW][loop] route -> startReadingMacroInstructions"));
             startReadingMacroInstructions(opCode);
         } else if (opCode == kEncoderResetOpCode) {
-            usbDebug(F("[FLOW][loop] route -> Safetynet::setTickOffset"));
-            motor.safetynet.setTickOffset();
+            usbDebug(F("[FLOW][loop] route -> Motor::resetPositionReference"));
+            motor.resetPositionReference();
         } else if (opCode == kConfigOpCode) {
             usbDebug(F("[FLOW][loop] route -> startReadingConfig"));
             startReadingConfig();
         } else {
-            //Reads motor instructions
-            usbDebug(F("[FLOW][loop] route -> startReadingMotorInstructions"));
-            startReadingMotorInstructions(opCode);
-            readMotorInstructionByte();
+            usbDebug(F("[FLOW][loop] ignored unknown opcode"));
         }
     }
-    if (motor.checkStatusAndUpdate()) {
-        usbDebug(F("[FLOW][loop] motor complete; sending behavior byte 1 to Bpod"));
-        Serial1COM.writeByte(1);
+    const uint8_t motorEvent = motor.checkStatusAndUpdate();
+    if (motorEvent != 0) {
+        usbDebugValue(F("[FLOW][loop] sending behavior event to Bpod="), motorEvent);
+        Serial1COM.writeByte(motorEvent);
     }
     crossCheckUpdate();
 }
