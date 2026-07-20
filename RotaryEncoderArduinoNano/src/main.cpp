@@ -9,12 +9,12 @@ constexpr uint8_t kEncoderBPin = D3;
 
 constexpr uint32_t kBpodBaudRate = 1312500;
 constexpr uint32_t kFirmwareVersion = 1;
-constexpr char kModuleName[] = "RotaryEncoder";
+constexpr char kModuleName[] = "EmadRotaryEncoder";
 
 constexpr uint8_t kModuleInfoOpCode = 255;
 constexpr uint8_t kConfigureSpeedTriggerOpCode = 1;
 constexpr uint8_t kSpeedAchievedEvent = 1;
-constexpr uint8_t kConfigLength = 8;
+constexpr uint8_t kConfigLength = 4;
 constexpr uint32_t kConfigReceiveTimeoutMs = 100;
 
 // Enable this while testing over USB. Bpod communication always uses Serial1.
@@ -28,8 +28,8 @@ uint8_t configBytesRead = 0;
 bool readingConfig = false;
 uint32_t lastConfigByteTimeMs = 0;
 
-uint32_t requiredSpeedTicksPerSecond = 0;
-uint32_t integrationTimeMs = 0;
+uint16_t requiredSpeedTicksPerSecond = 0;
+uint16_t integrationTimeMs = 0;
 bool speedTriggerArmed = false;
 int64_t integrationStartTicks = 0;
 uint32_t integrationStartTimeMs = 0;
@@ -96,11 +96,9 @@ void writeUint32LittleEndian(const uint32_t value) {
     Serial1.write(static_cast<uint8_t>(value >> 24U));
 }
 
-uint32_t readUint32LittleEndian(const uint8_t *bytes) {
-    return static_cast<uint32_t>(bytes[0]) |
-           (static_cast<uint32_t>(bytes[1]) << 8U) |
-           (static_cast<uint32_t>(bytes[2]) << 16U) |
-           (static_cast<uint32_t>(bytes[3]) << 24U);
+uint16_t readUint16LittleEndian(const uint8_t *bytes) {
+    return static_cast<uint16_t>(bytes[0]) |
+           (static_cast<uint16_t>(bytes[1]) << 8U);
 }
 
 void returnModuleInfo() {
@@ -136,8 +134,8 @@ void startReadingConfig() {
 }
 
 void applyReceivedConfig() {
-    requiredSpeedTicksPerSecond = readUint32LittleEndian(configBuffer);
-    integrationTimeMs = readUint32LittleEndian(configBuffer + 4);
+    requiredSpeedTicksPerSecond = readUint16LittleEndian(configBuffer) * 360/1024;
+    integrationTimeMs = readUint16LittleEndian(configBuffer + 2);
 
     readingConfig = false;
     configBytesRead = 0;
@@ -243,6 +241,8 @@ void checkSpeedTrigger() {
 
 void setup() {
     Serial.begin(115200);
+    delay(2000);
+    Serial.println(F("EmadRotaryEncoder firmware started"));
     Serial1.begin(kBpodBaudRate, SERIAL_8N1, kBpodRxPin, kBpodTxPin);
     setupEncoder();
 }

@@ -25,6 +25,8 @@ constexpr uint8_t kHostTransmitPin = 52;
 constexpr uint8_t kHostReceivePin = 50;
 constexpr uint8_t kClientTransmitPin = 48;
 constexpr uint8_t kClientReceivePin = 46;
+constexpr uint8_t kEnableLEDPin = 11;
+constexpr uint8_t kEstopLEDPin = 12;
 constexpr float kMaxMotorRPM = 120; // Must match the ClearPath MSP setup.
 float MaxMotorRPM = kMaxMotorRPM;
 constexpr byte kModuleScanOpCode = 255;
@@ -48,6 +50,7 @@ constexpr uint32_t kCrossCheckDutyTime = 500;
 constexpr uint32_t kSerialPacketTimeoutMs = 1000;
 constexpr uint8_t kMaxMotorInstructions = 199;
 constexpr double kDegreesPerRotation = 360.0;
+constexpr double kDegreesPerSecondPerRPM = 6.0;
 constexpr double kMillisPerSecond = 1000.0;
 constexpr double kMicrosPerSecond = 1000000.0;
 constexpr double kMaxInstructionTime = 65535.0;
@@ -56,10 +59,11 @@ constexpr int kTimeMultiplier = 1;
 int timeMultiplier = kTimeMultiplier;
 constexpr int kEncoderPPR = 14400;
 constexpr int kTolerance = 300;
-constexpr int kDisableTolerance = kEncoderPPR / 2;
-constexpr uint32_t kToleranceTripDelayMs = 2000;
-constexpr float defaultKP = 0.1f;
-constexpr float defaultKD = 0.1f;
+constexpr int kDisableTolerance = kEncoderPPR / 4;
+constexpr uint32_t kToleranceTripDelayMs = 1000;
+constexpr int32_t kCorrectiveThresholdTicks = 15;
+constexpr float kDefaultCorrectivePositionErrorMultiplier = 1.05f;
+constexpr float defaultCorrectiveSpeedRPM = 20.0f;
 constexpr bool kCorrectionEnabled = true;
 constexpr uint32_t kCorrectionStartDelayMs = 0;
 constexpr bool kUsbDebugEnabled = true; // Central switch for all USB debugging.
@@ -122,19 +126,19 @@ struct Config {
     int tolerance;
     int encoderPPR;
     int32_t maxRotation;
-    float kP;
-    float kD;
+    float correctiveSpeedRPM;
+    float correctivePositionErrorMultiplier;
     bool correctionEnabled;
     uint32_t correctionStartDelayMs;
-    Config() : maxMotorRPM(kMaxMotorRPM), timeMultiplier(kTimeMultiplier), tolerance(kTolerance), encoderPPR(kEncoderPPR), maxRotation(kMaxRotation), kP(defaultKP), kD(defaultKD), correctionEnabled(kCorrectionEnabled), correctionStartDelayMs(kCorrectionStartDelayMs) {}
-    Config(const float maxMotorRPM, const int timeMultiplier, const int tolerance, const int encoderPPR, const int maxRotation, const float kP, const float kD, const bool correctionEnabled, const uint16_t correctionStartDelayMs)
+    Config() : maxMotorRPM(kMaxMotorRPM), timeMultiplier(kTimeMultiplier), tolerance(kTolerance), encoderPPR(kEncoderPPR), maxRotation(kMaxRotation), correctiveSpeedRPM(defaultCorrectiveSpeedRPM), correctivePositionErrorMultiplier(kDefaultCorrectivePositionErrorMultiplier), correctionEnabled(kCorrectionEnabled), correctionStartDelayMs(kCorrectionStartDelayMs) {}
+    Config(const float maxMotorRPM, const int timeMultiplier, const int tolerance, const int encoderPPR, const int maxRotation, const float correctiveSpeedRPM, const float correctivePositionErrorMultiplier, const bool correctionEnabled, const uint16_t correctionStartDelayMs)
         : maxMotorRPM(maxMotorRPM),
             timeMultiplier(timeMultiplier),
-            tolerance(tolerance),
+            tolerance(tolerance * (encoderPPR*4/360)),
             encoderPPR(static_cast<int32_t>(encoderPPR) * 4),
             maxRotation(rotationLimitTicks(maxRotation, encoderPPR)),
-            kP(kP),
-            kD(kD),
+            correctiveSpeedRPM(correctiveSpeedRPM * 6),
+            correctivePositionErrorMultiplier(correctivePositionErrorMultiplier),
             correctionEnabled(correctionEnabled),
             correctionStartDelayMs(correctionStartDelayMs) {}
 };
@@ -254,12 +258,6 @@ class Safetynet {
         return nowMs - toleranceExceededSinceMs >= kToleranceTripDelayMs;
     }
 
-    bool checkCorrective() const {
-        const double targetTicks = degreesToTicks(currentTargetDegrees());
-        const double error = absoluteValue(static_cast<double>(getTicks()) - targetTicks);
-        return error >= tolerance;
-    }
-
     /**
     *
     * @author Emad Muzaffar
@@ -325,6 +323,7 @@ public:
     * @author Emad Muzaffar
     */
     int32_t getTicks() const {
+        //TODO: ENCODER RATIO MATH
         return -static_cast<int32_t>(TC0->TC_CHANNEL[0].TC_CV) - tickOffset;
     }
 
@@ -390,6 +389,7 @@ public:
             return;
         }
         digitalWrite(this->enablePin, HIGH);
+        digitalWrite(kEnableLEDPin, HIGH);
         usbDebugValue(F("[FLOW][Safetynet::enable] enable pin readback="), digitalRead(this->enablePin));
     }
 
@@ -399,6 +399,7 @@ public:
     */
     void disable() const {
         digitalWrite(this->enablePin, LOW);
+        digitalWrite(kEnableLEDPin, LOW);
         usbDebugValue(F("[FLOW][Safetynet::disable] enable pin readback="), digitalRead(this->enablePin));
     }
 
@@ -409,6 +410,7 @@ public:
     void eStop() {
         eStopped = true;
         disable();
+        digitalWrite(kEstopLEDPin, HIGH);
         usbDebug(F("[FLOW][Safetynet::eStop] emergency-stop path entered"));
     }
 
@@ -473,11 +475,8 @@ class Motor {
     size_t cInstruction = 0;
     std::vector<Instruction> instructions;
     bool running = false;
-    double pidTarget = 0;
-    double lastError = 0;
-    double pidTime = 0;
-    float kP = defaultKP;
-    float kD = defaultKD;
+    float correctiveSpeedRPM = defaultCorrectiveSpeedRPM;
+    float correctivePositionErrorMultiplier = kDefaultCorrectivePositionErrorMultiplier;
     bool correctionEnabled = kCorrectionEnabled;
     uint32_t correctionStartDelayMs = kCorrectionStartDelayMs;
     uint32_t correctionDelayStartedAtMs = 0;
@@ -512,7 +511,8 @@ class Motor {
         if (MaxMotorRPM <= 0.0f) {
             return 0.0f;
         }
-        const float targetRPM = static_cast<float>(velocityDegPerSec) / 6.0f;
+        const float targetRPM = static_cast<float>(velocityDegPerSec) /
+            static_cast<float>(kDegreesPerSecondPerRPM);
         return std::min(std::max(targetRPM, 0.0f), MaxMotorRPM);
     }
 
@@ -591,48 +591,35 @@ class Motor {
     *
     * @author Emad Muzaffar
     */
-    void pid() {
-        const auto nowMicros = static_cast<double>(micros());
-        const double rawError = static_cast<double>(safetynet.getTicks()) - pidTarget;
-        const double error = rawError > safetynet.tolerance
-            ? rawError - safetynet.tolerance
-            : (rawError < -safetynet.tolerance ? rawError + safetynet.tolerance : 0.0);
-        const double dtSeconds = (nowMicros - pidTime) / kMicrosPerSecond;
-        const double p = error;
-        const double d = pidTime > 0.0 && dtSeconds > 0.0
-            ? (error - lastError) / dtSeconds
-            : 0.0;
-        const double targetRPM = p * kP + d * kD;
+    bool startCorrection() {
+        const double measuredTicks = static_cast<double>(safetynet.getTicks());
+        const double targetTicks = safetynet.getTargetTicks();
+        const double errorTicks = measuredTicks - targetTicks;
 
-        if (targetRPM > 0.0) {
-            setDirection(1);
-        } else if (targetRPM < 0.0) {
-            setDirection(0);
-        }
-        writeFrequencyForRPM(targetRPM < 0.0 ? -targetRPM : targetRPM);
-        pidTime = nowMicros;
-        lastError = error;
-    }
-
-    bool updateCorrection() {
-        if (safetynet.checkCorrective()) {
-            pid();
+        if (Safetynet::absoluteValue(errorTicks) <= kCorrectiveThresholdTicks ||
+            correctiveSpeedRPM <= 0.0f) {
+            commandZeroVelocity();
             return false;
         }
 
-        writeFrequencyForRPM(0.0);
-        lastError = 0;
-        pidTime = 0;
-        return true;
-    }
+        const double errorDegrees = Safetynet::absoluteValue(errorTicks) *
+            static_cast<double>(correctivePositionErrorMultiplier) * kDegreesPerRotation /
+            static_cast<double>(safetynet.encoderPPR);
+        const double correctiveSpeedDegreesPerSecond =
+            static_cast<double>(correctiveSpeedRPM) * kDegreesPerSecondPerRPM;
+        const double correctionDurationMs =
+            errorDegrees / correctiveSpeedDegreesPerSecond * kMillisPerSecond;
 
-    /**
-    *
-    * @author Emad Muzaffar
-    */
-    bool correctionPID() {
-        pidTarget = safetynet.getTargetTicks();
-        return updateCorrection();
+        setDirection(errorTicks > 0.0 ? 1 : 0);
+        writeFrequencyForRPM(correctiveSpeedRPM);
+        startTime = millis();
+        durationMs = static_cast<uint32_t>(std::max(std::ceil(correctionDurationMs), 1.0));
+        running = true;
+
+        usbDebugValue(F("[FLOW][Motor::startCorrection] corrective speed RPM="),
+            static_cast<uint32_t>(correctiveSpeedRPM));
+        usbDebugValue(F("[FLOW][Motor::startCorrection] calculated duration ms="), durationMs);
+        return true;
     }
 
     /**
@@ -642,9 +629,6 @@ class Motor {
     void commandZeroVelocity() {
         setFrequencyOutput(kMinFrequency);
         running = false;
-        pidTarget = 0;
-        lastError = 0;
-        pidTime = 0;
     }
 
     /**
@@ -704,7 +688,6 @@ public:
             case pCORRECTING:
                 if (!correctionEnabled) {
                     motorState = INACTIVE;
-                    safetynet.disable();
                     commandZeroVelocity();
                     usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] correction disabled; sequence complete; state -> INACTIVE"));
                     return kCorrectionDoneEvent;
@@ -712,7 +695,7 @@ public:
                 if (millis() - correctionDelayStartedAtMs < correctionStartDelayMs) {
                     return 0;
                 }
-                if (correctionPID()) {
+                if (!startCorrection()) {
                     motorState = INACTIVE;
                     usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] correction already within tolerance; state -> INACTIVE"));
                     return kCorrectionDoneEvent;
@@ -722,7 +705,8 @@ public:
                 return 0;
 
             case CORRECTING:
-                if (updateCorrection()) {
+                if (timerComplete()) {
+                    commandZeroVelocity();
                     motorState = INACTIVE;
                     usbDebug(F("[FLOW][Motor::checkStatusAndUpdate] correction complete; state -> INACTIVE"));
                     return kCorrectionDoneEvent;
@@ -825,8 +809,8 @@ public:
     */
     void applyConfig(const Config &config) {
         usbDebug(F("[FLOW][Motor::applyConfig] applying motor and safety configuration"));
-        kP = config.kP;
-        kD = config.kD;
+        correctiveSpeedRPM = config.correctiveSpeedRPM;
+        correctivePositionErrorMultiplier = config.correctivePositionErrorMultiplier;
         correctionEnabled = config.correctionEnabled;
         correctionStartDelayMs = config.correctionStartDelayMs;
         safetynet.applyConfig(config);
@@ -836,7 +820,6 @@ public:
         instructions.clear();
         motorState = INACTIVE;
         commandZeroVelocity();
-        safetynet.disable();
         safetynet.resetPositionReference();
         usbDebug(F("[FLOW][Motor::resetPositionReference] motion stopped and measured/target position reset"));
     }
@@ -1065,12 +1048,15 @@ void readConfigByte() {
         const uint16_t tolerance = uint16ValueAt(configByteBuffer, 2);
         const uint16_t encoderPPR = uint16ValueAt(configByteBuffer, 3);
         const uint16_t maxRotation = uint16ValueAt(configByteBuffer, 4);
-        const float kP = static_cast<float>(uint16ValueAt(configByteBuffer, 5)) / kConfigGainScale;
-        const float kD = static_cast<float>(uint16ValueAt(configByteBuffer, 6)) / kConfigGainScale;
+        const uint16_t correctiveSpeedRPM = uint16ValueAt(configByteBuffer, 5);
+        const float correctivePositionErrorMultiplier =
+            static_cast<float>(uint16ValueAt(configByteBuffer, 6)) / kConfigGainScale;
         const uint16_t correctiveInt = uint16ValueAt(configByteBuffer, 7);
         const uint16_t correctionStartDelayMs = uint16ValueAt(configByteBuffer, 8);
         if (maxMotorRPM == 0 || configuredTimeMultiplier == 0 || encoderPPR == 0 ||
-            maxRotation == 0 || correctiveInt > 1) {
+            maxRotation == 0 || correctiveSpeedRPM > maxMotorRPM ||
+            (correctiveInt == 1 && (correctiveSpeedRPM == 0 ||
+                correctivePositionErrorMultiplier <= 0.0f)) || correctiveInt > 1) {
             usbDebug(F("[FLOW][readConfigByte] rejected invalid configuration; emergency stop latched"));
             motor.safetynet.eStop();
             resetSerialReadState();
@@ -1086,8 +1072,8 @@ void readConfigByte() {
             tolerance,
             encoderPPR,
             maxRotation,
-            kP,
-            kD,
+            correctiveSpeedRPM,
+            correctivePositionErrorMultiplier,
             correctionEnabled,
             correctionStartDelayMs);
         finishConfig();
@@ -1218,8 +1204,12 @@ void setup() {
     pinMode(kHostReceivePin, INPUT_PULLUP);
     pinMode(kClientTransmitPin, OUTPUT);
     pinMode(kClientReceivePin, INPUT_PULLUP);
+    pinMode(kEnableLEDPin, OUTPUT);
+    pinMode(kEstopLEDPin, OUTPUT);
     digitalWrite(kHostTransmitPin, LOW);
     digitalWrite(kClientTransmitPin, LOW);
+    digitalWrite(kEnableLEDPin, LOW);
+    digitalWrite(kEstopLEDPin, LOW);
     lastHostEchoState = digitalRead(kHostReceivePin);
     lastHostEchoTime = micros();
     usbDebug(F("[FLOW][setup] complete; entering loop"));
