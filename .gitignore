@@ -14,4 +14,4 @@ compile_commands.json
 .vscode/ipch/
 
 # Local Bpod protocol scratch files
-BpodProtocols/
+Bpod Local/Data
