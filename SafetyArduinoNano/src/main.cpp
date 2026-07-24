@@ -5,16 +5,19 @@
 #include <Arduino.h>
 
 // Cross-check pin setup
-constexpr uint8_t kEnablePin = 9;
-constexpr uint8_t kHostTransmitPin = 8;
-constexpr uint8_t kHostReceivePin = 7;
-constexpr uint8_t kClientTransmitPin = 6;
-constexpr uint8_t kClientReceivePin = 5;
+constexpr uint8_t kEnablePin = D9;
+constexpr uint8_t kHostTransmitPin = D5;
+constexpr uint8_t kHostReceivePin = D4;
+constexpr uint8_t kClientTransmitPin = D3;
+constexpr uint8_t kClientReceivePin = D2;
 
 // Timing setup
 constexpr uint32_t kHostStartTolerance = 1000;       // milliseconds before safety check starts
 constexpr uint32_t kCrossCheckMaxNoResponseTime = 5000; // microseconds before e-stop
 constexpr uint32_t kCrossCheckDutyTime = 500;        // microseconds between host toggles
+
+static_assert(kCrossCheckMaxNoResponseTime > 2 * kCrossCheckDutyTime,
+    "The cross-check timeout must allow at least two heartbeat transitions");
 
 // State tracking
 uint32_t hostTransmitTime = 0;
@@ -25,9 +28,17 @@ uint8_t lastHostEchoState = LOW;
 bool eStopBool = false;
 
 void eStop() {
+    if (eStopBool) {
+        return;
+    }
+
     digitalWrite(kEnablePin, LOW);
     eStopBool = true;
-    Serial.println("eStop");
+    // Stop both communication directions. The Due will see its heartbeat
+    // disappear and latch its own emergency stop.
+    digitalWrite(kHostTransmitPin, LOW);
+    digitalWrite(kClientTransmitPin, LOW);
+    Serial.println("eStop: Due heartbeat timed out");
 }
 
 void hostTransmit() {
@@ -113,6 +124,10 @@ void setup() {
 
 void loop() {
     if (eStopBool) {
+        // Keep every fail-safe output low until this controller is reset.
+        digitalWrite(kEnablePin, LOW);
+        digitalWrite(kHostTransmitPin, LOW);
+        digitalWrite(kClientTransmitPin, LOW);
         return;
     }
     crossCheckUpdate();

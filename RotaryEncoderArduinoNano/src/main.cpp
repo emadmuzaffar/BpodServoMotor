@@ -4,12 +4,16 @@ namespace {
 
 constexpr uint8_t kBpodRxPin = D0;
 constexpr uint8_t kBpodTxPin = D1;
-constexpr uint8_t kEncoderAPin = D2;
-constexpr uint8_t kEncoderBPin = D3;
+constexpr uint8_t kTreadmillSpeedPin = D2;
 
 constexpr uint32_t kBpodBaudRate = 1312500;
 constexpr uint32_t kFirmwareVersion = 1;
 constexpr char kModuleName[] = "EmadRotaryEncoder";
+
+// Older Janelia Treadmill Interface firmware outputs absolute speed:
+// 0 mm/s = 0 V and 1000 mm/s = 2.5 V.
+constexpr uint16_t kTreadmillOutputFullScaleMv = 2500;
+constexpr uint16_t kTreadmillMaxSpeedMmPerSecond = 1000;
 
 constexpr uint8_t kModuleInfoOpCode = 255;
 constexpr uint8_t kConfigureSpeedTriggerOpCode = 1;
@@ -20,19 +24,18 @@ constexpr uint32_t kConfigReceiveTimeoutMs = 100;
 // Enable this while testing over USB. Bpod communication always uses Serial1.
 constexpr bool kUsbDebugEnabled = true;
 
-volatile int64_t encoderTicks = 0;
-volatile uint8_t previousEncoderState = 0;
-
 uint8_t configBuffer[kConfigLength] = {};
 uint8_t configBytesRead = 0;
 bool readingConfig = false;
 uint32_t lastConfigByteTimeMs = 0;
 
-uint16_t requiredSpeedTicksPerSecond = 0;
+uint16_t requiredSpeedMmPerSecond = 0;
 uint16_t integrationTimeMs = 0;
 bool speedTriggerArmed = false;
-int64_t integrationStartTicks = 0;
 uint32_t integrationStartTimeMs = 0;
+uint32_t lastSpeedIntegralUpdateTimeMs = 0;
+uint16_t lastSpeedMmPerSecond = 0;
+uint64_t integratedSpeedMmPerSecondMilliseconds = 0;
 
 void usbDebug(const __FlashStringHelper *message) {
     if (kUsbDebugEnabled) {
@@ -40,53 +43,51 @@ void usbDebug(const __FlashStringHelper *message) {
     }
 }
 
-int64_t getEncoderTicks() {
-    noInterrupts();
-    const int64_t ticks = encoderTicks;
-    interrupts();
-    return ticks;
+void setupTreadmillSpeedInput() {
+    pinMode(kTreadmillSpeedPin, INPUT);
+    analogReadResolution(12);
+    analogSetPinAttenuation(kTreadmillSpeedPin, ADC_11db);
 }
 
-void IRAM_ATTR encoderISR() {
-    const uint8_t currentState =
-        (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1U) |
-        static_cast<uint8_t>(digitalRead(kEncoderBPin));
+uint16_t readTreadmillSpeedMmPerSecond() {
+    const uint32_t speedOutputMv = analogReadMilliVolts(kTreadmillSpeedPin);
+    uint32_t speedMmPerSecond =
+        (speedOutputMv * kTreadmillMaxSpeedMmPerSecond +
+         kTreadmillOutputFullScaleMv / 2U) /
+        kTreadmillOutputFullScaleMv;
 
-    const auto transition =
-        static_cast<uint8_t>((previousEncoderState << 2U) | currentState);
-
-    switch (transition) {
-        case 0b0001:
-        case 0b0111:
-        case 0b1110:
-        case 0b1000:
-            ++encoderTicks;
-            break;
-
-        case 0b0010:
-        case 0b1011:
-        case 0b1101:
-        case 0b0100:
-            --encoderTicks;
-            break;
-
-        default:
-            break;
+    if (speedMmPerSecond > kTreadmillMaxSpeedMmPerSecond) {
+        speedMmPerSecond = kTreadmillMaxSpeedMmPerSecond;
     }
 
-    previousEncoderState = currentState;
+    return static_cast<uint16_t>(speedMmPerSecond);
 }
 
-void setupEncoder() {
-    pinMode(kEncoderAPin, INPUT_PULLUP);
-    pinMode(kEncoderBPin, INPUT_PULLUP);
+void startSpeedIntegrationWindow() {
+    const uint32_t currentTimeMs = millis();
+    integrationStartTimeMs = currentTimeMs;
+    lastSpeedIntegralUpdateTimeMs = currentTimeMs;
+    lastSpeedMmPerSecond = readTreadmillSpeedMmPerSecond();
+    integratedSpeedMmPerSecondMilliseconds = 0;
+}
 
-    previousEncoderState =
-        (static_cast<uint8_t>(digitalRead(kEncoderAPin)) << 1U) |
-        static_cast<uint8_t>(digitalRead(kEncoderBPin));
+uint32_t sampleAndUpdateSpeedIntegral() {
+    const uint16_t newSpeedMmPerSecond =
+        readTreadmillSpeedMmPerSecond();
+    const uint32_t currentTimeMs = millis();
+    const uint32_t elapsedSinceIntegralUpdateMs =
+        currentTimeMs - lastSpeedIntegralUpdateTimeMs;
 
-    attachInterrupt(digitalPinToInterrupt(kEncoderAPin), encoderISR, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(kEncoderBPin), encoderISR, CHANGE);
+    if (speedTriggerArmed) {
+        integratedSpeedMmPerSecondMilliseconds +=
+            static_cast<uint64_t>(lastSpeedMmPerSecond) *
+            elapsedSinceIntegralUpdateMs;
+    }
+
+    lastSpeedIntegralUpdateTimeMs = currentTimeMs;
+    lastSpeedMmPerSecond = newSpeedMmPerSecond;
+
+    return currentTimeMs;
 }
 
 void writeUint32LittleEndian(const uint32_t value) {
@@ -134,7 +135,7 @@ void startReadingConfig() {
 }
 
 void applyReceivedConfig() {
-    requiredSpeedTicksPerSecond = readUint16LittleEndian(configBuffer) * 360/1024;
+    requiredSpeedMmPerSecond = readUint16LittleEndian(configBuffer);
     integrationTimeMs = readUint16LittleEndian(configBuffer + 2);
 
     readingConfig = false;
@@ -146,14 +147,13 @@ void applyReceivedConfig() {
         return;
     }
 
-    integrationStartTicks = getEncoderTicks();
-    integrationStartTimeMs = millis();
+    startSpeedIntegrationWindow();
     speedTriggerArmed = true;
 
     if (kUsbDebugEnabled) {
         Serial.print(F("[FLOW] Armed: threshold="));
-        Serial.print(requiredSpeedTicksPerSecond);
-        Serial.print(F(" ticks/s, window="));
+        Serial.print(requiredSpeedMmPerSecond);
+        Serial.print(F(" mm/s, window="));
         Serial.print(integrationTimeMs);
         Serial.println(F(" ms"));
     }
@@ -193,29 +193,23 @@ void processBpodSerial() {
     }
 }
 
-void checkSpeedTrigger() {
+void checkSpeedTrigger(const uint32_t currentTimeMs) {
     if (!speedTriggerArmed) {
         return;
     }
 
-    const uint32_t currentTimeMs = millis();
     const uint32_t elapsedMs = currentTimeMs - integrationStartTimeMs;
 
     if (elapsedMs < integrationTimeMs) {
         return;
     }
 
-    const int64_t currentTicks = getEncoderTicks();
-    const int64_t signedTickChange = currentTicks - integrationStartTicks;
-    const uint64_t absoluteTickChange = signedTickChange < 0
-                                            ? static_cast<uint64_t>(-signedTickChange)
-                                            : static_cast<uint64_t>(signedTickChange);
-
-    // Compare |ticks| / elapsed time against the requested ticks/second
-    // without rounding the measured speed down to an integer.
-    const uint64_t measuredScaled = absoluteTickChange * 1000ULL;
+    // Compare the time-integrated analog speed against the requested average
+    // without rounding the measured average down to an integer.
+    const uint64_t measuredScaled =
+        integratedSpeedMmPerSecondMilliseconds;
     const uint64_t requiredScaled =
-        static_cast<uint64_t>(requiredSpeedTicksPerSecond) * elapsedMs;
+        static_cast<uint64_t>(requiredSpeedMmPerSecond) * elapsedMs;
     const bool speedExceeded = measuredScaled > requiredScaled;
 
     if (kUsbDebugEnabled) {
@@ -223,7 +217,7 @@ void checkSpeedTrigger() {
             static_cast<float>(measuredScaled) / static_cast<float>(elapsedMs);
         Serial.print(F("[FLOW] Average speed="));
         Serial.print(measuredSpeed);
-        Serial.println(F(" ticks/s"));
+        Serial.println(F(" mm/s"));
     }
 
     if (speedExceeded) {
@@ -233,8 +227,9 @@ void checkSpeedTrigger() {
 
     // Continue monitoring in consecutive, non-overlapping windows. Every
     // window above the threshold produces a SpeedAchieved event.
-    integrationStartTicks = currentTicks;
     integrationStartTimeMs = currentTimeMs;
+    lastSpeedIntegralUpdateTimeMs = currentTimeMs;
+    integratedSpeedMmPerSecondMilliseconds = 0;
 }
 
 } // namespace
@@ -242,12 +237,13 @@ void checkSpeedTrigger() {
 void setup() {
     Serial.begin(115200);
     delay(2000);
-    Serial.println(F("EmadRotaryEncoder firmware started"));
+    Serial.println(F("EmadTreadmillSpeed firmware started"));
     Serial1.begin(kBpodBaudRate, SERIAL_8N1, kBpodRxPin, kBpodTxPin);
-    setupEncoder();
+    setupTreadmillSpeedInput();
 }
 
 void loop() {
     processBpodSerial();
-    checkSpeedTrigger();
+    const uint32_t currentTimeMs = sampleAndUpdateSpeedIntegral();
+    checkSpeedTrigger(currentTimeMs);
 }
