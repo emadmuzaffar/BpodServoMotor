@@ -20,6 +20,5 @@ CSWave  = GenerateSineWave(W.SamplingRate, frequency, SoundDuration);
 % Wave IDs: 1=UCS (LED), 2=CS (Sound)
 W.loadWaveform(1, UCSWave * UCSVoltage);
 W.loadWaveform(2, CSWave  * SoundAmplitude);
-"pulsesLoded"
 
 end

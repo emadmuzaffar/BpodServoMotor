@@ -127,7 +127,7 @@ if trialSetting == 2
     
     zapProbabilities = {0.75, 0.50, 0.25, 0};
 
-    soundProbalities = {1, 1, 1, 1};
+    soundProbalities = {0, 0.25, 0.50, 0.75};
     
 end
 
@@ -310,7 +310,7 @@ if trialSetting == 2
             'Timer', trialInterval, ...
             'StateChangeConditions', {'Tup', 'exit'}, ...
             'OutputActions', {});
-
+        
         SendStateMachine(sma);
         RunStateMachine();
         HandlePauseCondition;
@@ -324,7 +324,7 @@ if trialSetting == 2
             RunStateMachine();
             return
         end
-
+        currentTrial
     end
 end
 
