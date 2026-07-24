@@ -49,7 +49,8 @@ minInterTrialDelay = 3;
 maxInterTrialDelay = 8;
 minHomingDelay = 3;
 maxHomingDelay = 8;
-timeToZap = 0;
+maxTimeToZap = 0.3;
+minTimeToZap = 1;
 
 %% Treadmill Callback variables
 callbackSpeed = 50;
@@ -71,7 +72,6 @@ correctiveSpeedDegreesPerSecond = 108;
 correctivePosErrorMultiplier = 1.056; % Should not be touched unless the mechanical properties of the setup change
 correctiveEnable = false; % If true, the motor will correct for its position when there are no instructions
 correctionStartDelayMs = 1000; % Delay before correction activates
-delayToHome = 10;
 homeSpeed = 15;
 
 % Keep trial generation aligned with the configuration that will be sent to
@@ -112,12 +112,15 @@ end
 if trialSetting == 2
     
     trialTypes = { ...
-        {{360, 1000, 1}}, ... % Trial type 1
-        {{360, 500, 1}, {180, 1000, 1}}, ... % Trial type 2
-        {{360, 333, 1}, {180, 1000, 1}, {90, 666, 1}}, ... % Trial type 3
-        {{360, 333, 1}, {180, 500, 1} {90, 1000, 1} {30, 2000, 1}}, ... % Trial type 4
+        {{180, 1000, 0}, {90, 2000, 0}}, ... % Trial type 1
+        {{90, 2000, 0}, {180, 1000, 0}}, ... % Trial type 2
+        {{180, 1000, 0}, {90, 2000, 1}}, ...
+        {{90, 2000, 0}, {180, 1000, 1}}, ...
         };
     trialInstructionSeries = GenerateHomingTrialSeries(maxTrials, trialTypes);
+    
+    zapProbabilities = {0.6, 0.6, 0, 0};
+    
 end
 
 
@@ -228,7 +231,9 @@ if trialSetting == 2
     BpodSystem.Data = struct;
     for currentTrial = 1:maxTrials
         
-        trialInterval = randi([minInterTrialDelay, maxInterTrialDelay]);
+        trialInterval = rand([minInterTrialDelay, maxInterTrialDelay]);
+        delayToHome = rand([minHomingDelay, maxHomingDelay]);
+        trialTypInt = getTrialInt(trialTypes, trialInstructionSeries{currentTrial});
 
         sma = NewStateMachine();
         
@@ -241,11 +246,18 @@ if trialSetting == 2
             'Timer', timeToZap, ...
             'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1', 'Tup', 'ZapThenLogicState'}, ...
             'OutputActions', {});
-
-        sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
-            'Timer', timeToZap, ...
-            'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
-            'OutputActions', {}); % Figure out zap logic
+        
+        if rand > zapProbabilities{trialTypInt} 
+            sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
+                'Timer', timeToZap, ...
+                'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
+                'OutputActions', {}); % Figure out zap logic
+        else
+            sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
+                'Timer', timeToZap, ...
+                'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
+                'OutputActions', {}); % Figure out zap logic
+        end
 
         sma = AddInstructionStates(sma, 'Name', 'pWaitState1', ...
             'StateChangeConditions', {instructionsReceived, 'WaitState1'}, ...
@@ -270,6 +282,12 @@ if trialSetting == 2
         SendStateMachine(sma);
         RunStateMachine();
         HandlePauseCondition;
+
+        if ~isempty(fieldnames(RawEvents)) % If you didn't stop the session manually mid-trial
+            BpodSystem.Data = AddTrialEvents(BpodSystem.Data,RawEvents); % Adds raw events to a human-readable data struct
+            BpodSystem.Data.TrialSettings(currentTrial) = S; % Adds the settings used for the current trial to the Data struct (to be saved after the trial ends)
+            SaveBpodSessionData; % Saves the field BpodSystem.Data to the current data file
+        end
         if BpodSystem.Status.BeingUsed == 0
             return
         end
