@@ -10,8 +10,6 @@ constexpr uint32_t kBpodBaudRate = 1312500;
 constexpr uint32_t kFirmwareVersion = 1;
 constexpr char kModuleName[] = "EmadRotaryEncoder";
 
-// Older Janelia Treadmill Interface firmware outputs absolute speed:
-// 0 mm/s = 0 V and 1000 mm/s = 2.5 V.
 constexpr uint16_t kTreadmillOutputFullScaleMv = 2500;
 constexpr uint16_t kTreadmillMaxSpeedMmPerSecond = 1000;
 
@@ -21,7 +19,7 @@ constexpr uint8_t kSpeedAchievedEvent = 1;
 constexpr uint8_t kConfigLength = 4;
 constexpr uint32_t kConfigReceiveTimeoutMs = 100;
 
-// Enable this while testing over USB. Bpod communication always uses Serial1.
+// testing over USB
 constexpr bool kUsbDebugEnabled = true;
 
 uint8_t configBuffer[kConfigLength] = {};
@@ -129,8 +127,7 @@ void startReadingConfig() {
     configBytesRead = 0;
     lastConfigByteTimeMs = millis();
 
-    // Do not allow the old configuration to fire while a replacement packet
-    // is only partially received.
+    // Do not allow the old configuration to fire while a replacement packet is only partially received.
     speedTriggerArmed = false;
 }
 
