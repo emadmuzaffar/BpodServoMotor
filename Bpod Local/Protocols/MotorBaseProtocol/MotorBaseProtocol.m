@@ -50,7 +50,7 @@ soundAction = ['P' 1 1];  % Channel 1, Waveform 1 = Sound
 lightAction = ['P' 2 0];  % Channel 2, Waveform 0 = Light
 
 %% Normal trial variables
-maxTrials = 8; % Standard Bpod max trials
+maxTrials = 20; % Standard Bpod max trials
 minInterTrialDelay = 3;
 maxInterTrialDelay = 8;
 minHomingDelay = 3;
