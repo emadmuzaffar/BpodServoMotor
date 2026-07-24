@@ -1,0 +1,29 @@
+
+%%
+function protocolInstrucitons = GenerateRandomTrialSeries(trials, trialTypes)
+global ServoMotorStruct
+
+protocolInstrucitons = ones(1, trials);
+
+accumulatedRotation = 0;
+nTrialTypes = numel(trialTypes);
+
+validateProtocolTrialTypes(trialTypes)
+
+for t = 1:trials 
+    randi = randi(1, nTrialTypes, 'int32');
+    while abs(accumulatedRotation + getTrialDistance(trialTypes(randi))) > ServoMotorStruct.maxDistance
+        randi = randi(1, nTrialTypes, 'int32');
+    end
+    if abs(accumulatedRotation + getTrialDistance(trialTypes(randi))) < ServoMotorStruct.maxDistance
+        protocolInstrucitons{t} = trialTypes{randi};
+    else 
+        error("Randomization failed")
+    end
+end
+end
+
+
+
+
+
