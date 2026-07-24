@@ -42,9 +42,15 @@
 function MotorBaseProtocol
 global BpodSystem
 ServoMotorData;
+frequency = 4000;
+startWavePlayer(frequency)
+
+wavePlayer = 'WavePlayer1';
+soundAction = ['P' 1 1];  % Channel 1, Waveform 1 = Sound
+lightAction = ['P' 2 0];  % Channel 2, Waveform 0 = Light
 
 %% Normal trial variables
-maxTrials = 5; % Standard Bpod max trials
+maxTrials = 8; % Standard Bpod max trials
 minInterTrialDelay = 3;
 maxInterTrialDelay = 8;
 minHomingDelay = 3;
@@ -119,7 +125,9 @@ if trialSetting == 2
         };
     trialInstructionSeries = GenerateHomingTrialSeries(maxTrials, trialTypes);
     
-    zapProbabilities = {1, 1, 0, 0};
+    zapProbabilities = {0.75, 0.50, 0.25, 0};
+
+    soundProbalities = {1, 1, 1, 1};
     
 end
 
@@ -244,6 +252,13 @@ if trialSetting == 2
         trialTypInt = getTrialInt(trialTypes, trialInstructionSeries{currentTrial});
 
         sma = NewStateMachine();
+           
+        if rand < soundProbalities{trialTypInt}
+            sma = AddState(sma, 'Name', 'soundState', ...
+                'Timer', 1, ...
+                'StateChangeConditions', {'Tup', 'SendInstructionsState'}, ...
+                'OutputActions', {wavePlayer, soundAction});
+        end
         
         sma = AddInstructionStates(sma, 'Name', 'SendInstructionsState', ... % Use AddInstructions to send a series of instructions
             'StateChangeConditions', {instructionsReceived, 'LogicState'}, ... % Transition states upon message send completion
@@ -259,14 +274,14 @@ if trialSetting == 2
             sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
                 'Timer', 1, ...
                 'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
-                'OutputActions', {}); % Figure out zap logic
+                'OutputActions', {wavePlayer, lightAction}); % Figure out zap logic
             trialTypInt
             "zapped"
         else
             sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
                 'Timer', 1, ...
                 'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
-                'OutputActions', {}); % Figure out zap logic
+                'OutputActions', {}); 
             trialTypInt
             "nozapped"
         end
