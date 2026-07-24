@@ -49,8 +49,8 @@ minInterTrialDelay = 3;
 maxInterTrialDelay = 8;
 minHomingDelay = 3;
 maxHomingDelay = 8;
-maxTimeToZap = 0.3;
 minTimeToZap = 1;
+maxTimeToZap = 2;
 
 %% Treadmill Callback variables
 callbackSpeed = 50;
@@ -114,12 +114,12 @@ if trialSetting == 2
     trialTypes = { ...
         {{180, 1000, 0}, {90, 2000, 0}}, ... % Trial type 1
         {{90, 2000, 0}, {180, 1000, 0}}, ... % Trial type 2
-        {{180, 1000, 0}, {90, 2000, 1}}, ...
-        {{90, 2000, 0}, {180, 1000, 1}}, ...
+        {{180, 1000, 1}, {90, 2000, 1}}, ...
+        {{90, 2000, 1}, {180, 1000, 1}}, ...
         };
     trialInstructionSeries = GenerateHomingTrialSeries(maxTrials, trialTypes);
     
-    zapProbabilities = {0.6, 0.6, 0, 0};
+    zapProbabilities = {1, 1, 0, 0};
     
 end
 
@@ -219,6 +219,13 @@ if trialSetting == 1
        RunStateMachine();
        HandlePauseCondition;
        if BpodSystem.Status.BeingUsed == 0
+           sma = NewStateMachine();
+           sma = AddState(sma, 'Name', 'DisableMotor', ...
+               'Timer', 0.1, ...
+               'StateChangeConditions', {'Tup', 'exit'}, ...
+               'OutputActions', {servoMotor, disableMotor});
+           SendStateMachine(sma);
+           RunStateMachine();
            return
        end
     
@@ -231,8 +238,9 @@ if trialSetting == 2
     BpodSystem.Data = struct;
     for currentTrial = 1:maxTrials
         
-        trialInterval = rand([minInterTrialDelay, maxInterTrialDelay]);
-        delayToHome = rand([minHomingDelay, maxHomingDelay]);
+        trialInterval = randi([minInterTrialDelay, maxInterTrialDelay]);
+        delayToHome = randi([minHomingDelay, maxHomingDelay]);
+        timeToZap = randi([minTimeToZap, maxTimeToZap]);
         trialTypInt = getTrialInt(trialTypes, trialInstructionSeries{currentTrial});
 
         sma = NewStateMachine();
@@ -247,16 +255,20 @@ if trialSetting == 2
             'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1', 'Tup', 'ZapThenLogicState'}, ...
             'OutputActions', {});
         
-        if rand > zapProbabilities{trialTypInt} 
+        if rand < zapProbabilities{trialTypInt} 
             sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
-                'Timer', timeToZap, ...
+                'Timer', 1, ...
                 'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
                 'OutputActions', {}); % Figure out zap logic
+            trialTypInt
+            "zapped"
         else
             sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
-                'Timer', timeToZap, ...
+                'Timer', 1, ...
                 'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
                 'OutputActions', {}); % Figure out zap logic
+            trialTypInt
+            "nozapped"
         end
 
         sma = AddInstructionStates(sma, 'Name', 'pWaitState1', ...
@@ -282,13 +294,14 @@ if trialSetting == 2
         SendStateMachine(sma);
         RunStateMachine();
         HandlePauseCondition;
-
-        if ~isempty(fieldnames(RawEvents)) % If you didn't stop the session manually mid-trial
-            BpodSystem.Data = AddTrialEvents(BpodSystem.Data,RawEvents); % Adds raw events to a human-readable data struct
-            BpodSystem.Data.TrialSettings(currentTrial) = S; % Adds the settings used for the current trial to the Data struct (to be saved after the trial ends)
-            SaveBpodSessionData; % Saves the field BpodSystem.Data to the current data file
-        end
         if BpodSystem.Status.BeingUsed == 0
+            sma = NewStateMachine();
+            sma = AddState(sma, 'Name', 'DisableMotor', ...
+                'Timer', 0.1, ...
+                'StateChangeConditions', {'Tup', 'exit'}, ...
+                'OutputActions', {servoMotor, disableMotor});
+            SendStateMachine(sma);
+            RunStateMachine();
             return
         end
 

@@ -49,7 +49,8 @@ minInterTrialDelay = 3;
 maxInterTrialDelay = 8;
 minHomingDelay = 3;
 maxHomingDelay = 8;
-timeToZap = 0;
+minTimeToZap = 1;
+maxTimeToZap = 2;
 
 %% Treadmill Callback variables
 callbackSpeed = 50;
@@ -71,7 +72,6 @@ correctiveSpeedDegreesPerSecond = 108;
 correctivePosErrorMultiplier = 1.056; % Should not be touched unless the mechanical properties of the setup change
 correctiveEnable = false; % If true, the motor will correct for its position when there are no instructions
 correctionStartDelayMs = 1000; % Delay before correction activates
-delayToHome = 10;
 homeSpeed = 15;
 
 % Keep trial generation aligned with the configuration that will be sent to
@@ -114,13 +114,12 @@ if trialSetting == 2
     trialTypes = { ...
         {{180, 1000, 0}, {90, 2000, 0}}, ... % Trial type 1
         {{90, 2000, 0}, {180, 1000, 0}}, ... % Trial type 2
-        {{90, 2000, 0}, {180, 1000, 1}}, ...
-        {{180, 1000, 0}, {90, 2000, 1}}, ...
-        {{360, 333, 1}, {180, 1000, 1}, {90, 666, 1}}, ... % Trial type 3
-        {{360, 333, 1}, {180, 500, 1} {90, 1000, 1} {30, 2000, 1}}, ... % Trial type 4
+        {{180, 1000, 1}, {90, 2000, 1}}, ...
+        {{90, 2000, 1}, {180, 1000, 1}}, ...
         };
     trialInstructionSeries = GenerateHomingTrialSeries(maxTrials, trialTypes);
-
+    
+    zapProbabilities = {0.6, 0.6, 0, 0};
     
 end
 
@@ -220,6 +219,13 @@ if trialSetting == 1
        RunStateMachine();
        HandlePauseCondition;
        if BpodSystem.Status.BeingUsed == 0
+           sma = NewStateMachine();
+           sma = AddState(sma, 'Name', 'DisableMotor', ...
+               'Timer', 0.1, ...
+               'StateChangeConditions', {'Tup', 'exit'}, ...
+               'OutputActions', {servoMotor, disableMotor});
+           SendStateMachine(sma);
+           RunStateMachine();
            return
        end
     
@@ -233,6 +239,9 @@ if trialSetting == 2
     for currentTrial = 1:maxTrials
         
         trialInterval = randi([minInterTrialDelay, maxInterTrialDelay]);
+        delayToHome = randi([minHomingDelay, maxHomingDelay]);
+        timeToZap = randi([minTimeToZap, maxTimeToZap]);
+        trialTypInt = getTrialInt(trialTypes, trialInstructionSeries{currentTrial});
 
         sma = NewStateMachine();
         
@@ -245,11 +254,22 @@ if trialSetting == 2
             'Timer', timeToZap, ...
             'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1', 'Tup', 'ZapThenLogicState'}, ...
             'OutputActions', {});
-
-        sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
-            'Timer', timeToZap, ...
-            'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
-            'OutputActions', {}); % Figure out zap logic
+        
+        if rand > zapProbabilities{trialTypInt} 
+            sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
+                'Timer', 1, ...
+                'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
+                'OutputActions', {}); % Figure out zap logic
+            trialTypInt
+            "zapped"
+        else
+            sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
+                'Timer', 1, ...
+                'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
+                'OutputActions', {}); % Figure out zap logic
+            trialTypInt
+            "nozapped"
+        end
 
         sma = AddInstructionStates(sma, 'Name', 'pWaitState1', ...
             'StateChangeConditions', {instructionsReceived, 'WaitState1'}, ...
@@ -275,6 +295,13 @@ if trialSetting == 2
         RunStateMachine();
         HandlePauseCondition;
         if BpodSystem.Status.BeingUsed == 0
+            sma = NewStateMachine();
+            sma = AddState(sma, 'Name', 'DisableMotor', ...
+                'Timer', 0.1, ...
+                'StateChangeConditions', {'Tup', 'exit'}, ...
+                'OutputActions', {servoMotor, disableMotor});
+            SendStateMachine(sma);
+            RunStateMachine();
             return
         end
 
