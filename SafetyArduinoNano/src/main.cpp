@@ -34,8 +34,6 @@ void eStop() {
 
     digitalWrite(kEnablePin, LOW);
     eStopBool = true;
-    // Stop both communication directions. The Due will see its heartbeat
-    // disappear and latch its own emergency stop.
     digitalWrite(kHostTransmitPin, LOW);
     digitalWrite(kClientTransmitPin, LOW);
     Serial.println("eStop: Due heartbeat timed out");
