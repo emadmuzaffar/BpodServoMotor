@@ -189,6 +189,7 @@ SendStateMachine(sma);
 RunStateMachine();
 HandlePauseCondition;
 if BpodSystem.Status.BeingUsed == 0
+    disableMotorOnEnd();
     return
 end
 
@@ -232,13 +233,7 @@ if trialSetting == 1
        RunStateMachine();
        HandlePauseCondition;
        if BpodSystem.Status.BeingUsed == 0
-           sma = NewStateMachine();
-           sma = AddState(sma, 'Name', 'DisableMotor', ...
-               'Timer', 0.1, ...
-               'StateChangeConditions', {'Tup', 'exit'}, ...
-               'OutputActions', {servoMotor, disableMotor});
-           SendStateMachine(sma);
-           RunStateMachine();
+           disableMotorOnEnd();
            return
        end
     
@@ -315,35 +310,13 @@ if trialSetting == 2
         RunStateMachine();
         HandlePauseCondition;
         if BpodSystem.Status.BeingUsed == 0
-            sma = NewStateMachine();
-            sma = AddState(sma, 'Name', 'DisableMotor', ...
-                'Timer', 0.1, ...
-                'StateChangeConditions', {'Tup', 'exit'}, ...
-                'OutputActions', {servoMotor, disableMotor});
-            SendStateMachine(sma);
-            RunStateMachine();
+            disableMotorOnEnd();
             return
         end
         currentTrial
     end
 end
 
-% ignore
-if trialSetting == 3
-    error("not yet implemented")
-end
-
-% Post trial state machine to disable the motor
-sma = NewStateMachine();
-sma = AddState(sma, 'Name', 'DisableMotor', ...
-    'Timer', 0.1, ...
-    'StateChangeConditions', {'Tup', 'exit'}, ...
-    'OutputActions', {servoMotor, disableMotor});
-SendStateMachine(sma);
-RunStateMachine();
-HandlePauseCondition;
-if BpodSystem.Status.BeingUsed == 0
-    return
-end
+disableMotorOnEnd();
 "finished"
 end
