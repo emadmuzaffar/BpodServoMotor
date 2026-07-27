@@ -119,15 +119,17 @@ if trialSetting == 2
     
     trialTypes = { ...
         {{180, 1000, 0}, {90, 2000, 0}}, ... % Trial type 1
-        {{90, 2000, 0}, {180, 1000, 0}}, ... % Trial type 2
+        %{{90, 2000, 0}, {180, 1000, 0}}, ... % Trial type 2
         {{180, 1000, 1}, {90, 2000, 1}}, ...
-        {{90, 2000, 1}, {180, 1000, 1}}, ...
+        %{{90, 2000, 1}, {180, 1000, 1}}, ...
         };
     trialInstructionSeries = GenerateHomingTrialSeries(maxTrials, trialTypes);
     
-    zapProbabilities = {0.75, 0.50, 0.25, 0};
+    %zapProbabilities = {0.75, 0.50, 0.25, 0};
+    zapProbabilities = {1, 0};
 
-    soundProbalities = {0, 0, 0, 0};
+    %soundProbalities = {0, 0, 0, 0};
+    soundProbalities = {0, 0};
     
 end
 
@@ -258,6 +260,7 @@ if trialSetting == 2
                 'Timer', 1, ...
                 'StateChangeConditions', {'Tup', 'SendInstructionsState'}, ...
                 'OutputActions', {wavePlayer, soundAction});
+            "Sound"
         end
         
         sma = AddInstructionStates(sma, 'Name', 'SendInstructionsState', ... % Use AddInstructions to send a series of instructions
