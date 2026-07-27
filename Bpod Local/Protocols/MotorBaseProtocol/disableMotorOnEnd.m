@@ -1,5 +1,6 @@
 function disableMotorOnEnd()
 servoMotor = 'ServoMotor1';
+disableMotor = uint8(250);
 % Post trial state machine to disable the motor
 sma = NewStateMachine();
 sma = AddState(sma, 'Name', 'DisableMotor', ...
