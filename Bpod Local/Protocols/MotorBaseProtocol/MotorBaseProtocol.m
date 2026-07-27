@@ -127,7 +127,7 @@ if trialSetting == 2
     
     zapProbabilities = {0.75, 0.50, 0.25, 0};
 
-    soundProbalities = {0, 0.25, 0.50, 0.75};
+    soundProbalities = {0, 0, 0, 0};
     
 end
 
