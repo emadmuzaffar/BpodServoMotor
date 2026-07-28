@@ -5,7 +5,7 @@ S = BpodSystem.ProtocolSettings;
 BpodSystem.assertModule('WavePlayer', 1);
 W = BpodWavePlayer(BpodSystem.ModuleUSB.WavePlayer1);
 
-% Non-GUI Parameters
+% Parameters
 SoundDuration = 2;          % seconds
 SoundAmplitude = 2;         % Volume control
 UCSDuration = 2;            % LED stimulation duration

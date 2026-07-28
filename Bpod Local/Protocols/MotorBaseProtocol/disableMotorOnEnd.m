@@ -9,5 +9,6 @@ sma = AddState(sma, 'Name', 'DisableMotor', ...
     'OutputActions', {servoMotor, disableMotor});
 SendStateMachine(sma);
 RunStateMachine();
+"MOTOR DISABLED"
 HandlePauseCondition;
 end

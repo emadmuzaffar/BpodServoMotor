@@ -38,6 +38,12 @@
 % make noises as if it is moving, this is mostly due to the lack of
 % mechanical load, and will be less audible when attached to a rig.
 %
+% There may be a >1 second delay between pressing the stop button in Bpod
+% and the protocol actually stopping. This is unavoidable and is caused by
+% the need to run a state machine on protocol end to disable the motor.
+% Otherwise the motor would continue to move if the protocol is stopped
+% manually.
+%
 
 function MotorBaseProtocol
 global BpodSystem
@@ -45,28 +51,27 @@ ServoMotorData;
 frequency = 4000;
 startWavePlayer(frequency)
 
-wavePlayer = 'WavePlayer1';
+wavePlayer = 'WavePlayer1'; % Wave player variables can be changed in .m file: startWavePlayer.m
 soundAction = ['P' 1 1];  % Channel 1, Waveform 1 = Sound
 lightAction = ['P' 2 0];  % Channel 2, Waveform 0 = Light
 
 %% Normal trial variables
 maxTrials = 20; % Standard Bpod max trials
-minInterTrialDelay = 3;
+minInterTrialDelay = 3; % Delay after homing before next trial, Randomized between these two values
 maxInterTrialDelay = 8;
-minHomingDelay = 3;
+minHomingDelay = 3; % Delay before homing after move complete/run. Randomized between these two values
 maxHomingDelay = 8;
-minTimeToZap = 1;
+minTimeToZap = 1; % Delay to zap from movement onset
 maxTimeToZap = 2;
+preProtocolDelay = 10; % % Delay before the first trial, (interTrialDelay runs at the end of each trial)
 
-%% Treadmill Callback variables
-callbackSpeed = 50;
+%% Treadmill Callback Variables
+callbackSpeed = 50; % treadmill speed in mm/s
 callbackAveragingTimePeriodMS = 1; % time over which the callback is averaged (0 == disabled)
 
 
-%% ServoMotor Variables, all max out at 65500 (uint-max16)
-% Bpod motion values describe the belt-driven part. The Due converts them to
-% the 1080 RPM motor-side full scale configured in ClearPath MSP.
-maxDrivenRPM = 120;
+%% ServoMotor Module Config Variables, all max out at 65500 (uint-max16)
+maxDrivenRPM = 120; % !! CLEARPATH MSP MAX RPM MUST BE maxDrivenRPM * 9 !! CAN CAUSE EXTREME SPEEDS IF SET INCORRECTLY !!
 timeMultiplier = 1; % Multiplies the times sent in instructions, useful if desired time in ms exceeds 65500 or for more precision
 tolerance = 15; % % If error in degrees exceeds this, the system will correct, corrective must be enabled for correction.
 encoderPPR = 3600; % Encoder pulses per revolution; firmware uses x4 quadrature counts
@@ -78,17 +83,16 @@ correctiveSpeedDegreesPerSecond = 108;
 correctivePosErrorMultiplier = 1.056; % Should not be touched unless the mechanical properties of the setup change
 correctiveEnable = false; % If true, the motor will correct for its position when there are no instructions
 correctionStartDelayMs = 1000; % Delay before correction activates
-homeSpeed = 15;
+homeSpeed = 15; % Speed in deg/s to home at
 
-% Keep trial generation aligned with the configuration that will be sent to
-% the Due later in the pretrial state machine.
+% !! DO NOT TOUCH !! Sends variables to matlab safety net
 ServoMotorStruct.maxRotation = maxRotation;
 ServoMotorStruct.timeMultiplier = timeMultiplier;
 ServoMotorStruct.maxDrivenRPM = maxDrivenRPM;
 
 
 
-%% Experimental variables. Set up for the 3 trial types here, others can be made.
+%% Motor experimental variables. Set up for the 2 trial types here, others can be made.
 trialSetting = 2; % 1 = Emad test setup, Experimental setup with homing
 
 % Settings for trial type 1
@@ -125,6 +129,9 @@ if trialSetting == 2
         };
     trialInstructionSeries = GenerateHomingTrialSeries(maxTrials, trialTypes);
     
+    % Sound and zap probability arrays correspond to trial type arrays by
+    % position, they must be of same size as the trial type array
+
     %zapProbabilities = {0.75, 0.50, 0.25, 0};
     zapProbabilities = {1, 0};
 
@@ -139,6 +146,9 @@ end
 
 
 
+
+
+%% !! STUFF BELOW THIS LINE IS NOT REGULARLY USEFUL, DO NOT TOUCH UNLESS YOU KNOW WHAT YOU ARE DOING !!
 %% !! STUFF BELOW THIS LINE IS NOT REGULARLY USEFUL, DO NOT TOUCH UNLESS YOU KNOW WHAT YOU ARE DOING !!
 
 
@@ -183,12 +193,13 @@ sma = AddState(sma, 'Name', 'CameraOnState', ...
     'StateChangeCondtitions', {'Tup', 'EnableMotorState'}, ...
     'OutputActions', {'BNC1', 1, 'BNC2', 1});
 sma = AddState(sma, 'Name', 'EnableMotorState', ...
-    'Timer', 0.01, ...
+    'Timer', preProtocolDelay, ...
     'StateChangeConditions', {'Tup', 'exit'}, ...
     'OutputActions', {servoMotor, enableMotor, ...
     'BNC1', 1, 'BNC2', 1});
 SendStateMachine(sma);
 RunStateMachine();
+"MOTOR ENABLED"
 HandlePauseCondition;
 if BpodSystem.Status.BeingUsed == 0
     disableMotorOnEnd();
@@ -252,6 +263,8 @@ if trialSetting == 2
         delayToHome = randi([minHomingDelay, maxHomingDelay]);
         timeToZap = randi([minTimeToZap, maxTimeToZap]);
         trialTypInt = getTrialInt(trialTypes, trialInstructionSeries{currentTrial});
+        string(currentTrial) + "started"
+        trialTypInt
 
         sma = NewStateMachine();
            
@@ -260,7 +273,7 @@ if trialSetting == 2
                 'Timer', 1, ...
                 'StateChangeConditions', {'Tup', 'SendInstructionsState'}, ...
                 'OutputActions', {wavePlayer, soundAction});
-            "Sound"
+            "Sound triggered"
         end
         
         sma = AddInstructionStates(sma, 'Name', 'SendInstructionsState', ... % Use AddInstructions to send a series of instructions
@@ -278,14 +291,12 @@ if trialSetting == 2
                 'Timer', 1, ...
                 'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
                 'OutputActions', {wavePlayer, lightAction}); % Figure out zap logic
-            trialTypInt
             "zapped"
         else
             sma = AddState(sma, 'Name', 'ZapThenLogicState', ...
                 'Timer', 1, ...
                 'StateChangeConditions', {atRunningSpeed, 'pWaitState1', instructionsCompleted, 'WaitState1'}, ...
                 'OutputActions', {}); 
-            trialTypInt
             "nozapped"
         end
 
@@ -316,7 +327,7 @@ if trialSetting == 2
             disableMotorOnEnd();
             return
         end
-        currentTrial
+        string(currentTrial) + "completed"
     end
 end
 
