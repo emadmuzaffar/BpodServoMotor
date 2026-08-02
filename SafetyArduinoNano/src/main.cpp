@@ -2,6 +2,15 @@
 // Created by Emad Muzaffar on 7/10/26.
 //
 
+/**
+ * !! DEPRECATED !!
+ *
+ * No longer needed due to the use of digital frequency being sent to motor as opposed to hardware pwm.
+ * This is because digital frequency is not susceptible to a loop-blocking crash causing a uncontrolled signal. With
+ * digital frequency, the motor will effectively be commanded to stop within 60ms.
+ */
+
+
 #include <Arduino.h>
 
 // Cross-check pin setup

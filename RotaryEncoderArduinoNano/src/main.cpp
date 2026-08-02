@@ -1,5 +1,19 @@
 #include <Arduino.h>
 
+/**
+ * Main file for the rotary encoder system callback module.
+ *
+ * Designed to function with https://github.com/janelia-experimental-technology/Rodent-Belt-Treadmill
+ * This system does not currently support the direction output from the box
+ *
+ * Acts as a Bpod module, receiving a config byte to initialize. This config byte begins with a 1 then the
+ * minimum required speed to trigger a callback, then terminate with the averaging period.
+ *
+ * A callback is triggered if the average of the speeds checked on every loop throughout the averaging period is
+ * greater than the callback speed.
+ *
+ */
+
 namespace {
 
 constexpr uint8_t kBpodRxPin = D0;
